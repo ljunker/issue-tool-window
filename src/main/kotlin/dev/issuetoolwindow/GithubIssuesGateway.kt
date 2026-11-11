@@ -15,6 +15,8 @@ import java.net.URLEncoder
 internal class GithubIssuesGateway(private val repository: Repository, account: GithubAccount) : IssuesGateway {
     private val executor = GithubApiRequestExecutor.Factory.getInstance().create(account)
     private val issuesUrl = URI("https", "api.github.com", "/repos/${repository.fullName}/issues", null).toASCIIString()
+    private val labelsUrl =
+        URI("https", "api.github.com", "/repos/${repository.fullName}/labels", "per_page=100", null).toASCIIString()
 
     override suspend fun issues(filter: IssueFilter, next: String?): Page<Issue> =
         firstPageWithIssues(next ?: "$issuesUrl?state=${filter.apiValue}&per_page=30") { url ->
@@ -64,29 +66,62 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
             )
         ).toIssue()
 
+    override suspend fun labels(): List<String> =
+        allPages(labelsUrl) { url ->
+            val page = request(GithubApiRequest.Get.JsonPage<RestLabel>(pageUrl(url), RestLabel::class.java, ACCEPT))
+            Page(page.items.map(RestLabel::name), page.nextLink)
+        }.distinct().sortedWith(String.CASE_INSENSITIVE_ORDER)
+
+    override suspend fun changeLabels(number: Long, add: Collection<String>, remove: Collection<String>): Issue {
+        // Single additions and removals leave labels that someone else changed in the meantime untouched.
+        if (add.isNotEmpty()) {
+            request(
+                GithubApiRequest.Post.Json(
+                    "$issuesUrl/$number/labels", mapOf("labels" to add.toList()), Array<RestLabel>::class.java, ACCEPT,
+                )
+            )
+        }
+        for (label in remove) {
+            try {
+                executor.execute(GithubApiRequest.Delete.json<Unit>(issueLabelUrl(repository, number, label)))
+            } catch (error: GithubStatusCodeException) {
+                // GitHub answers 404 when the label was already removed from the issue.
+                if (error.statusCode != 404) throw failure(error)
+            } catch (error: Exception) {
+                throw failure(error)
+            }
+        }
+        return issue(number)
+    }
+
     private suspend fun <T> request(request: GithubApiRequest<T>): T = try {
         executor.execute(request)
-    } catch (_: GithubMissingTokenException) {
-        throw IssuesFailure(message("error.signIn"), offerSignIn = true)
-    } catch (error: GithubRateLimitExceededException) {
-        throw IssuesFailure(message("error.rateLimit"))
-    } catch (error: GithubAuthenticationException) {
-        // The bundled executor combines 401 and 403 and only preserves GitHub's response text.
-        val details = error.message.orEmpty()
-        val invalidCredentials = listOf("bad credentials", "requires authentication", "token has expired")
-            .any { details.contains(it, ignoreCase = true) }
-        throw IssuesFailure(message("error.access", details), offerSignIn = invalidCredentials)
-    } catch (error: GithubStatusCodeException) {
-        val details = error.error?.presentableError
-        throw IssuesFailure(
-            when {
-                details != null -> message("error.github", error.statusCode, details)
-                error.statusCode == 410 -> message("error.issuesDisabled")
-                else -> message("error.http", error.statusCode)
-            }
-        )
-    } catch (_: IOException) {
-        throw IssuesFailure(message("error.connection"))
+    } catch (error: Exception) {
+        throw failure(error)
+    }
+
+    private fun failure(error: Exception): Exception = when (error) {
+        is GithubMissingTokenException -> IssuesFailure(message("error.signIn"), offerSignIn = true)
+        is GithubRateLimitExceededException -> IssuesFailure(message("error.rateLimit"))
+        is GithubAuthenticationException -> {
+            // The bundled executor combines 401 and 403 and only preserves GitHub's response text.
+            val details = error.message.orEmpty()
+            val invalidCredentials = listOf("bad credentials", "requires authentication", "token has expired")
+                .any { details.contains(it, ignoreCase = true) }
+            IssuesFailure(message("error.access", details), offerSignIn = invalidCredentials)
+        }
+        is GithubStatusCodeException -> {
+            val details = error.error?.presentableError
+            IssuesFailure(
+                when {
+                    details != null -> message("error.github", error.statusCode, details)
+                    error.statusCode == 410 -> message("error.issuesDisabled")
+                    else -> message("error.http", error.statusCode)
+                }
+            )
+        }
+        is IOException -> IssuesFailure(message("error.connection"))
+        else -> error
     }
 
     private fun pageUrl(url: String): String {
@@ -110,6 +145,26 @@ internal fun issueSearchUrl(repository: Repository, query: String, filter: Issue
         append(" \"").append(query.replace('"', ' ').replace('\\', ' ')).append('"')
     }
     return "https://api.github.com/search/issues?q=${URLEncoder.encode(terms, Charsets.UTF_8)}&per_page=30"
+}
+
+internal fun issueLabelUrl(repository: Repository, number: Long, label: String): String {
+    // A label name is one path segment, so slashes and spaces must be encoded as well.
+    val name = URLEncoder.encode(label, Charsets.UTF_8).replace("+", "%20")
+    return URI("https", "api.github.com", "/repos/${repository.fullName}/issues/$number/labels", null)
+        .toASCIIString() + "/" + name
+}
+
+internal suspend fun <T> allPages(start: String, load: suspend (String) -> Page<T>): List<T> {
+    val items = mutableListOf<T>()
+    val visited = mutableSetOf<String>()
+    var url: String? = start
+    while (url != null) {
+        if (!visited.add(url)) throw IssuesFailure(message("error.pagination"))
+        val page = load(url)
+        items += page.items
+        url = page.next
+    }
+    return items
 }
 
 internal fun RestIssue?.toOpenedIssue(number: Long): Issue {
