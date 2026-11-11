@@ -1,3 +1,6 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+import org.jetbrains.intellij.platform.gradle.models.ProductRelease
+
 plugins {
     kotlin("jvm") version "2.4.21"
     id("org.jetbrains.intellij.platform") version "2.20.1"
@@ -47,7 +50,8 @@ intellijPlatform {
         changeNotes = providers.gradleProperty("pluginChangeNotes")
         ideaVersion {
             sinceBuild = "263"
-            untilBuild = "263.*"
+            // Keine Obergrenze: Folgeversionen mit kompatibler API dürfen das Plugin installieren.
+            untilBuild = provider { null }
         }
     }
     signing {
@@ -60,6 +64,14 @@ intellijPlatform {
         channels = providers.gradleProperty("pluginChannel").map { listOf(it) }.orElse(listOf("default"))
     }
     pluginVerification {
-        ides { current() }
+        ides {
+            current()
+            // Zusätzlich den neuesten Release jeder IDEA-Hauptversion ab 263 prüfen.
+            select {
+                types = listOf(IntelliJPlatformType.IntellijIdea)
+                channels = listOf(ProductRelease.Channel.RELEASE)
+                sinceBuild = "263"
+            }
+        }
     }
 }
