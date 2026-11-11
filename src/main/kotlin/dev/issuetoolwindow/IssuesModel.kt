@@ -20,7 +20,7 @@ internal data class IssuesState(
     val issues: Page<Issue> = Page(emptyList(), null),
     val selected: Long? = null,
     val issue: Issue? = null,
-    val comments: Page<Comment> = Page(emptyList(), null),
+    val activity: Page<IssueActivity> = Page(emptyList(), null),
     val listLoading: Boolean = false,
     val detailLoading: Boolean = false,
     val writing: Boolean = false,
@@ -132,7 +132,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
             copy(
                 selected = number,
                 issue = issues.items.firstOrNull { it.number == number },
-                comments = Page(emptyList(), null),
+                activity = Page(emptyList(), null),
                 detailLoading = false,
                 detailError = null,
                 writeError = null,
@@ -143,8 +143,8 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         if (number != null) loadDetail()
     }
 
-    fun moreComments() {
-        val next = current.comments.next ?: return
+    fun moreActivity() {
+        val next = current.activity.next ?: return
         if (!current.detailLoading) loadDetail(next)
     }
 
@@ -160,11 +160,11 @@ internal class IssuesModel(private val scope: CoroutineScope) {
                     ensureActive()
                     update { copy(issue = issue) }
                 }
-                val page = source.comments(number, next)
+                val page = source.activity(number, next)
                 ensureActive()
                 update {
-                    val items = if (next == null) page.items else (comments.items + page.items).distinctBy(Comment::id)
-                    copy(comments = Page(items, page.next), detailLoading = false)
+                    val items = if (next == null) page.items else (activity.items + page.items).distinctBy(IssueActivity::id)
+                    copy(activity = Page(items, page.next), detailLoading = false)
                 }
             } catch (error: IssuesFailure) {
                 ensureActive()
@@ -215,7 +215,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
                     issues = Page((listOf(created) + issues.items.filter { it.open }).distinctBy(Issue::number), null),
                     selected = created.number,
                     issue = created,
-                    comments = Page(emptyList(), null),
+                    activity = Page(emptyList(), null),
                     detailError = null,
                     editor = null,
                     commentDraft = "",

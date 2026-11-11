@@ -40,7 +40,7 @@ class IssueDetailsEditorProvider : FileEditorProvider, DumbAware {
 @OptIn(ExperimentalCoroutinesApi::class)
 private class IssueDetailsEditor(private val issueFile: IssueDetailsFile) : UserDataHolderBase(), FileEditor {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
-    private val view = IssueDetailsPanel(issueFile.model, issueFile.openOnGitHub)
+    private val view = IssueDetailsPanel(issueFile.model, issueFile.openOnGitHub, this)
 
     init {
         view.render(issueFile.model.state.value)

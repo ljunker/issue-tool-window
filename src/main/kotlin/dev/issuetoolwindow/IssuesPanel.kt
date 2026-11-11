@@ -1,13 +1,24 @@
 package dev.issuetoolwindow
 
+import com.intellij.icons.AllIcons
+import com.intellij.ide.BrowserUtil
+import com.intellij.ide.ui.LafManagerListener
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.util.Disposer
 import com.intellij.ui.DocumentAdapter
+import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
+import com.intellij.ui.components.JBHtmlPane
+import com.intellij.ui.components.JBHtmlPaneConfiguration
+import com.intellij.ui.components.JBHtmlPaneStyleConfiguration
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
+import com.intellij.util.ui.ExtendableHTMLViewFactory
 import com.intellij.util.ui.JBUI
 import dev.issuetoolwindow.IssuesBundle.message
 import org.jetbrains.plugins.github.authentication.accounts.GithubAccount
@@ -15,6 +26,8 @@ import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Component
 import java.awt.FlowLayout
+import java.awt.Font
+import java.awt.Point
 import java.awt.event.ActionEvent
 import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
@@ -31,6 +44,7 @@ import javax.swing.KeyStroke
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
 import javax.swing.event.DocumentEvent
+import javax.swing.event.HyperlinkEvent
 import javax.swing.text.JTextComponent
 
 internal class IssuesPanel(
@@ -233,13 +247,37 @@ internal class IssuesPanel(
 internal class IssueDetailsPanel(
     private val model: IssuesModel,
     openOnGitHub: (Long) -> Unit,
+    parent: Disposable,
 ) {
     private val detailCards = CardLayout()
     private val details = JPanel(detailCards)
     private val detailPlaceholder = JBLabel()
     private val detailStatus = JBLabel()
-    private val issueText = textArea(6).apply { isEditable = false }
-    private val moreComments = button("action.more", model::moreComments)
+    private val issueText = JBHtmlPane(
+        JBHtmlPaneStyleConfiguration(),
+        JBHtmlPaneConfiguration {
+            customStyleSheetProvider { issueDetailsStyleSheet(JBColor.isBright()) }
+            extensions(ExtendableHTMLViewFactory.Extensions.WORD_WRAP)
+            iconResolver { name ->
+                when (name) {
+                    "label-event" -> AllIcons.Nodes.Tag
+                    "link-event" -> AllIcons.Actions.OpenNewTab
+                    "pull-request-event" -> AllIcons.Vcs.Branch
+                    else -> null
+                }
+            }
+        },
+    ).apply {
+        Disposer.register(parent, this)
+        accessibleContext.accessibleName = message("detail.tab")
+        addHyperlinkListener { event ->
+            if (event.eventType == HyperlinkEvent.EventType.ACTIVATED) {
+                event.description?.let(IssueMarkdown::browserUri)?.let(BrowserUtil::browse)
+            }
+        }
+    }
+    private val issueScroll = JBScrollPane(issueText).apply { border = JBUI.Borders.empty() }
+    private val moreActivity = button("action.more", model::moreActivity)
     private val toggleStatus = button("action.close", model::toggleStatus)
     private val edit = button("action.edit", model::startEdit)
     private val browser =
@@ -261,14 +299,18 @@ internal class IssueDetailsPanel(
     val preferredFocus: JTextComponent get() = if (model.state.value.editor == null) issueText else title
 
     private var updating = false
-    private var renderedDetail: Long? = null
+    private var renderedContent: IssueDetailsContent? = null
     private var wasEditing = false
 
     init {
+        val commentHeading = labelFor("detail.addComment", comment).apply { font = font.deriveFont(Font.BOLD) }
+        val composer = stack(row(moreActivity), row(commentHeading), JBScrollPane(comment), row(post)).apply {
+            border = JBUI.Borders.empty(0, 20)
+        }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
             add(stack(row(toggleStatus, edit, browser), detailStatus), BorderLayout.NORTH)
-            add(JBScrollPane(issueText), BorderLayout.CENTER)
-            add(stack(row(moreComments), JBScrollPane(comment), row(post)), BorderLayout.SOUTH)
+            add(issueScroll, BorderLayout.CENTER)
+            add(composer, BorderLayout.SOUTH)
         }
         val form = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
             add(
@@ -284,6 +326,10 @@ internal class IssueDetailsPanel(
         panel.add(details, BorderLayout.CENTER)
         panel.add(feedbackScroll, BorderLayout.SOUTH)
 
+        ApplicationManager.getApplication().messageBus.connect(parent).subscribe(
+            LafManagerListener.TOPIC,
+            LafManagerListener { issueText.reloadCssStylesheets() },
+        )
         comment.onEdit { if (!updating) model.editComment(comment.text) }
         title.onEdit { if (!updating) updateDraft() }
         description.onEdit { if (!updating) updateDraft() }
@@ -314,6 +360,7 @@ internal class IssueDetailsPanel(
                 }
 
                 else -> {
+                    renderedContent = null
                     detailPlaceholder.text = message(
                         when {
                             state.detailLoading -> "detail.loading"
@@ -337,35 +384,26 @@ internal class IssueDetailsPanel(
     }
 
     private fun renderIssue(state: IssuesState, issue: Issue) {
-        val content = buildString {
-            appendLine(message("detail.title", issue.number.toString(), issue.title))
-            appendLine(message("detail.status", message(if (issue.open) "filter.open" else "filter.closed")))
-            appendLine(message("detail.author", issue.author ?: message("detail.unknown")))
-            appendLine(message("detail.labels", issue.labels.joinToString().ifEmpty { message("detail.none") }))
-            appendLine(message("detail.assignees", issue.assignees.joinToString().ifEmpty { message("detail.none") }))
-            appendLine()
-            appendLine(issue.body.ifBlank { message("detail.noDescription") })
-            appendLine()
-            appendLine(message("detail.comments"))
-            if (state.comments.items.isEmpty() && !state.detailLoading && state.detailError == null) {
-                appendLine(message("detail.noComments"))
-            }
-            for (entry in state.comments.items) {
-                appendLine()
-                val author = entry.author ?: message("detail.unknown")
-                appendLine(entry.createdAt?.let { message("detail.commentAuthor", author, it) } ?: author)
-                appendLine(entry.body)
-            }
-        }
-        issueText.syncText(content)
-        if (renderedDetail != issue.number) {
-            issueText.caretPosition = 0
-            renderedDetail = issue.number
+        val content = IssueDetailsContent(
+            issue,
+            state.activity.items,
+            showEmptyActivity = state.activity.items.isEmpty() && state.activity.next == null &&
+                !state.detailLoading && state.detailError == null,
+        )
+        if (renderedContent != content) {
+            val sameIssue = renderedContent?.issue?.number == issue.number
+            val position = if (sameIssue) issueText.caretPosition else 0
+            val viewport = issueScroll.viewport
+            val scrollPosition = if (sameIssue) viewport.viewPosition else Point()
+            issueText.text = content.toHtml()
+            issueText.caretPosition = position.coerceAtMost(issueText.document.length)
+            viewport.viewPosition = scrollPosition
+            renderedContent = content
         }
         detailStatus.text = message("detail.loading")
         detailStatus.isVisible = state.detailLoading
-        moreComments.isVisible = state.comments.next != null
-        moreComments.isEnabled = !state.detailLoading && !state.writing
+        moreActivity.isVisible = state.activity.next != null
+        moreActivity.isEnabled = !state.detailLoading && !state.writing
         toggleStatus.text = message(if (issue.open) "action.close" else "action.reopen")
         toggleStatus.isEnabled = !state.writing && !state.needsSignIn
         edit.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn

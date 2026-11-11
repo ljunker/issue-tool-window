@@ -32,11 +32,8 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
         request(GithubApiRequest.Get.Optional.Json("$issuesUrl/$number", RestIssue::class.java, ACCEPT))
             .toOpenedIssue(number)
 
-    override suspend fun comments(number: Long, next: String?): Page<Comment> {
-        val url = pageUrl(next ?: "$issuesUrl/$number/comments?per_page=30")
-        val page = request(GithubApiRequest.Get.JsonPage(url, RestComment::class.java, ACCEPT))
-        return Page(page.items.map(RestComment::toComment), page.nextLink)
-    }
+    override suspend fun activity(number: Long, next: String?): Page<IssueActivity> =
+        request(issueActivityRequest(repository, number, next)).toPage(next)
 
     override suspend fun create(title: String, body: String?): Issue {
         val fields = if (body == null) mapOf("title" to title) else mapOf("title" to title, "body" to body)
@@ -143,14 +140,16 @@ internal data class RestIssue(
     val labels: List<RestLabel> = emptyList(),
     val assignees: List<RestUser> = emptyList(),
     val pullRequest: Map<String, Any?>? = null,
+    val createdAt: String? = null,
 ) {
     fun toIssue(): Issue = Issue(
         number, title, state == "open", user?.login, body.orEmpty(), labels.map { it.name }, assignees.map { it.login },
+        createdAt,
     )
 }
 
 internal data class RestUser(val login: String)
 internal data class RestLabel(val name: String)
-internal data class RestComment(val id: Long, val user: RestUser?, val body: String?, val createdAt: String?) {
-    fun toComment(): Comment = Comment(id, user?.login, body.orEmpty(), createdAt)
+internal data class RestComment(val nodeId: String, val user: RestUser?, val body: String?, val createdAt: String?) {
+    fun toComment(): Comment = Comment(nodeId, user?.login, body.orEmpty(), createdAt)
 }
