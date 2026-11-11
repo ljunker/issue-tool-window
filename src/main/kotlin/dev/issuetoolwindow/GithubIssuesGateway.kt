@@ -20,14 +20,14 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
     private val assigneesUrl =
         URI("https", "api.github.com", "/repos/${repository.fullName}/assignees", "per_page=100", null).toASCIIString()
 
-    override suspend fun issues(filter: IssueFilter, next: String?): Page<Issue> =
-        firstPageWithIssues(next ?: "$issuesUrl?state=${filter.apiValue}&per_page=30") { url ->
+    override suspend fun issues(filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
+        firstPageWithIssues(next ?: issueListUrl(issuesUrl, filter, sort)) { url ->
             val page = request(GithubApiRequest.Get.JsonPage<RestIssue>(pageUrl(url), RestIssue::class.java, ACCEPT))
             Page(page.items, page.nextLink)
         }
 
-    override suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue> =
-        firstPageWithIssues(next ?: issueSearchUrl(repository, query, filter)) { url ->
+    override suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
+        firstPageWithIssues(next ?: issueSearchUrl(repository, query, filter, sort)) { url ->
             val page = request(GithubApiRequest.Get.JsonSearchPage(pageUrl(url), RestIssue::class.java, ACCEPT))
             Page(page.items, page.nextLink)
         }
@@ -176,14 +176,23 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
     }
 }
 
-internal fun issueSearchUrl(repository: Repository, query: String, filter: IssueFilter): String {
+internal fun issueListUrl(issuesUrl: String, filter: IssueFilter, sort: IssueSort): String =
+    "$issuesUrl?state=${filter.apiValue}&sort=${sort.apiSort}&direction=${sort.apiDirection}&per_page=30"
+
+internal fun issueSearchUrl(
+    repository: Repository,
+    query: String,
+    filter: IssueFilter,
+    sort: IssueSort = IssueSort.NEWEST,
+): String {
     val terms = buildString {
         append("repo:${repository.fullName} is:issue in:title,body")
         if (filter != IssueFilter.ALL) append(" state:${filter.apiValue}")
         // Keep user text inside the phrase so it cannot change the repository or status qualifiers.
         append(" \"").append(query.replace('"', ' ').replace('\\', ' ')).append('"')
     }
-    return "https://api.github.com/search/issues?q=${URLEncoder.encode(terms, Charsets.UTF_8)}&per_page=30"
+    return "https://api.github.com/search/issues?q=${URLEncoder.encode(terms, Charsets.UTF_8)}" +
+        "&sort=${sort.apiSort}&order=${sort.apiDirection}&per_page=30"
 }
 
 internal fun issueLabelUrl(repository: Repository, number: Long, label: String): String {
@@ -237,15 +246,16 @@ internal data class RestIssue(
     val assignees: List<RestUser> = emptyList(),
     val pullRequest: Map<String, Any?>? = null,
     val createdAt: String? = null,
+    val comments: Int = 0,
 ) {
     fun toIssue(): Issue = Issue(
         number, title, state == "open", user?.login, body.orEmpty(), labels.map { it.name }, assignees.map { it.login },
-        createdAt,
+        createdAt, comments, labels.mapNotNull { label -> label.color?.let { label.name to it } }.toMap(),
     )
 }
 
 internal data class RestUser(val login: String)
-internal data class RestLabel(val name: String)
+internal data class RestLabel(val name: String, val color: String? = null)
 internal data class RestComment(val nodeId: String, val user: RestUser?, val body: String?, val createdAt: String?) {
     fun toComment(): Comment = Comment(nodeId, user?.login, body.orEmpty(), createdAt)
 }

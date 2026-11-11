@@ -5,10 +5,12 @@ import com.intellij.ide.BrowserUtil
 import com.intellij.ide.ui.LafManagerListener
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.CheckBoxList
+import com.intellij.collaboration.ui.codereview.list.search.DropDownComponentFactory
 import com.intellij.ui.DocumentAdapter
+import com.intellij.ui.ScrollPaneFactory
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBHtmlPane
@@ -22,7 +24,9 @@ import com.intellij.ui.components.JBTextField
 import com.intellij.util.ui.ExtendableHTMLViewFactory
 import com.intellij.util.ui.JBUI
 import dev.issuetoolwindow.IssuesBundle.message
-import org.jetbrains.plugins.github.authentication.accounts.GithubAccount
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Component
@@ -35,98 +39,106 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.AbstractAction
 import javax.swing.BoxLayout
-import javax.swing.DefaultComboBoxModel
-import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
 import javax.swing.JButton
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.KeyStroke
-import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
+import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
 import javax.swing.event.HyperlinkEvent
 import javax.swing.text.JTextComponent
 
 internal class IssuesPanel(
     private val model: IssuesModel,
-    chooseRepository: (Repository) -> Unit,
-    chooseAccount: (GithubAccount) -> Unit,
+    scope: CoroutineScope,
     signIn: () -> Unit,
     private val showDetails: (focus: Boolean) -> Unit,
 ) {
-    val panel = JPanel(BorderLayout(JBUI.scale(6), JBUI.scale(6))).apply { border = JBUI.Borders.empty(8) }
-    private val repositories = ComboBox<Repository>().apply {
-        renderer = renderer { value -> value?.fullName ?: message("repository.prompt") }
-        accessibleContext.accessibleName = message("repository.prompt")
+    val panel = JPanel(BorderLayout())
+    private val signInLink = ActionLink(message("action.signInAgain")) { signIn() }
+    private val signInBanner = row(signInLink).apply {
+        border = JBUI.Borders.empty(0, 8, 4, 8)
         isVisible = false
     }
-    private val accounts = ComboBox<GithubAccount>().apply {
-        renderer = renderer { value -> value?.name ?: message("account.prompt") }
-        accessibleContext.accessibleName = message("account.prompt")
-        isVisible = false
+    private val searchField = SearchTextField(SEARCH_HISTORY).apply {
+        textEditor.emptyText.text = message("search.prompt")
+        textEditor.accessibleContext.accessibleName = message("search.prompt")
     }
-    private val signInLink = ActionLink(message("action.signIn")) { signIn() }.apply { isVisible = false }
-    private val context = JBLabel(message("context.loading"))
-
-    private val filters = ComboBox(IssueFilter.entries.toTypedArray()).apply {
-        renderer = renderer { value -> value?.let { message(it.messageKey) }.orEmpty() }
-    }
-    private val searchInput = JBTextField().apply {
-        emptyText.text = message("search.prompt")
-        accessibleContext.accessibleName = message("search.prompt")
-    }
-    private val search = button("action.search", ::submitSearch)
-    private val refresh = button("action.refresh", model::refresh)
-    private val newIssue = button("action.new") {
-        if (model.state.value.editor == null) model.startCreate()
-        if (model.state.value.editor != null) showDetails(true)
-    }
-    private val listStatus = JBLabel()
+    private val stateChip = MutableStateFlow<IssueFilter?>(IssueFilter.OPEN)
+    private val sortChip = MutableStateFlow<IssueSort?>(null)
     private val issueRows = DefaultListModel<Issue>()
     private val issueList = JBList(issueRows).apply {
         selectionMode = ListSelectionModel.SINGLE_SELECTION
-        cellRenderer =
-            renderer { value -> value?.let { message("detail.title", it.number.toString(), it.title) }.orEmpty() }
+        cellRenderer = IssueListCellRenderer()
         accessibleContext.accessibleName = message("list.name")
     }
-    private val moreIssues = button("action.more", model::moreIssues)
+    private val issueScroll = ScrollPaneFactory.createScrollPane(issueList, true)
 
     private val feedback = textArea(2).apply { isEditable = false }
     private val feedbackScroll = JBScrollPane(feedback).apply { isVisible = false }
 
-    private val workspace: JPanel
     private var updating = false
     private var renderedIssues = emptyList<Issue>()
-    private var contextSignIn = false
 
     init {
-        val selectors = stack(
-            repositories, accounts,
-            row(signInLink),
+        val filters = JPanel(FlowLayout(FlowLayout.LEADING, JBUI.scale(2), 0)).apply {
+            add(JBLabel(AllIcons.General.Filter).apply { border = JBUI.Borders.emptyRight(4) })
+            add(
+                DropDownComponentFactory(stateChip).create(
+                    scope,
+                    filterName = message("filter.state"),
+                    items = listOf(IssueFilter.OPEN, IssueFilter.CLOSED),
+                    onSelect = {},
+                    valuePresenter = { filter: IssueFilter -> message(filter.messageKey) },
+                )
+            )
+            add(
+                DropDownComponentFactory(sortChip).create(
+                    scope,
+                    filterName = message("filter.sort"),
+                    items = IssueSort.entries,
+                    onSelect = {},
+                    valuePresenter = { sort: IssueSort -> message(sort.messageKey) },
+                )
+            )
+        }
+        val header = stack(
+            JPanel(BorderLayout()).apply {
+                border = JBUI.Borders.empty(8, 8, 4, 8)
+                add(searchField, BorderLayout.CENTER)
+            },
+            JPanel(BorderLayout()).apply {
+                border = JBUI.Borders.empty(0, 6, 6, 8)
+                add(filters, BorderLayout.WEST)
+            },
+            signInBanner,
         )
-        val searchBar = JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
-            add(searchInput, BorderLayout.CENTER)
-            add(search, BorderLayout.EAST)
-        }
-        workspace = JPanel(BorderLayout()).apply {
-            add(stack(row(filters, refresh), searchBar, row(newIssue), listStatus), BorderLayout.NORTH)
-            add(JBScrollPane(issueList), BorderLayout.CENTER)
-            add(stack(row(moreIssues), feedbackScroll), BorderLayout.SOUTH)
-            isVisible = false
-        }
+        panel.add(header, BorderLayout.NORTH)
+        panel.add(issueScroll, BorderLayout.CENTER)
+        panel.add(feedbackScroll, BorderLayout.SOUTH)
 
-        panel.add(selectors, BorderLayout.NORTH)
-        panel.add(JPanel(BorderLayout()).apply {
-            add(context, BorderLayout.NORTH)
-            add(workspace, BorderLayout.CENTER)
-        }, BorderLayout.CENTER)
-
-        repositories.addActionListener { if (!updating) (repositories.selectedItem as? Repository)?.let(chooseRepository) }
-        accounts.addActionListener { if (!updating) (accounts.selectedItem as? GithubAccount)?.let(chooseAccount) }
-        filters.addActionListener { if (!updating) (filters.selectedItem as? IssueFilter)?.let(model::filter) }
-        searchInput.addActionListener { submitSearch() }
-        searchInput.onEdit { if (!updating) model.editSearch(searchInput.text) }
+        scope.launch {
+            stateChip.collect { chosen ->
+                model.filter(chosen ?: IssueFilter.ALL)
+                // The model ignores the change while an issue is written or edited.
+                stateChip.value = stateChipValue(model.state.value.filter)
+            }
+        }
+        scope.launch {
+            sortChip.collect { chosen ->
+                model.sort(chosen ?: IssueSort.NEWEST)
+                sortChip.value = sortChipValue(model.state.value.sort, chosen)
+            }
+        }
+        searchField.textEditor.addActionListener { submitSearch() }
+        searchField.addDocumentListener(object : DocumentAdapter() {
+            override fun textChanged(e: DocumentEvent) {
+                if (!updating) model.editSearch(searchField.text)
+            }
+        })
+        issueScroll.verticalScrollBar.model.addChangeListener { loadMoreWhenAtEnd() }
         issueList.addListSelectionListener {
             if (!updating && !it.valueIsAdjusting && issueList.isEnabled) openSelectedIssue(false)
         }
@@ -145,56 +157,17 @@ internal class IssuesPanel(
         })
     }
 
-    fun showContext(
-        repos: List<Repository>,
-        repo: Repository?,
-        savedAccounts: List<GithubAccount>,
-        account: GithubAccount?
-    ) {
-        updating = true
-        try {
-            repositories.model = DefaultComboBoxModel(repos.toTypedArray())
-            repositories.selectedItem = repo
-            repositories.isVisible = repos.isNotEmpty()
-            accounts.model = DefaultComboBoxModel(savedAccounts.toTypedArray())
-            accounts.selectedItem = account
-            accounts.isVisible = repo != null && savedAccounts.isNotEmpty()
-            val hint = when {
-                repos.isEmpty() -> "context.noRepository"
-                repo == null -> "context.chooseRepository"
-                savedAccounts.isEmpty() -> "context.signIn"
-                account == null -> "context.chooseAccount"
-                else -> null
-            }
-            context.isVisible = hint != null
-            context.text = hint?.let(IssuesBundle::message).orEmpty()
-            contextSignIn = repo != null && savedAccounts.isEmpty()
-            renderSignIn(model.state.value)
-        } finally {
-            updating = false
-        }
-    }
-
     fun render(state: IssuesState) {
         updating = true
         try {
-            workspace.isVisible = state.connected
-            renderSignIn(state)
-            repositories.isEnabled = !state.writing
-            accounts.isEnabled = !state.writing
-            val editor = state.editor
-            val canNavigate = !state.writing && editor == null
-            filters.selectedItem = state.filter
-            filters.isEnabled = canNavigate
-            searchInput.syncText(state.searchInput)
-            searchInput.isEnabled = canNavigate
-            search.isEnabled = canNavigate && state.searchInput.isNotBlank()
+            signInBanner.isVisible = state.needsSignIn
+            signInLink.isEnabled = !state.writing
+            val canNavigate = !state.writing && state.editor == null
+            stateChip.value = stateChipValue(state.filter)
+            sortChip.value = sortChipValue(state.sort, sortChip.value)
+            if (searchField.text != state.searchInput) searchField.text = state.searchInput
+            searchField.isEnabled = canNavigate
             issueList.isEnabled = canNavigate
-            refresh.isEnabled = !state.writing
-            newIssue.text = message(if (editor == null) "action.new" else "action.openDraft")
-            newIssue.isEnabled = editor != null || (canNavigate && !state.needsSignIn)
-            moreIssues.isVisible = state.issues.next != null
-            moreIssues.isEnabled = !state.listLoading && canNavigate
 
             if (renderedIssues != state.issues.items) {
                 renderedIssues = state.issues.items
@@ -202,13 +175,12 @@ internal class IssuesPanel(
                 issueRows.addAll(renderedIssues)
             }
             issueList.selectedIndex = renderedIssues.indexOfFirst { it.number == state.selected }
-            listStatus.text = when {
+            issueList.emptyText.text = when {
                 state.listLoading -> message("list.loading")
                 state.listError != null -> message("list.failed")
-                renderedIssues.isEmpty() -> message(if (state.searchQuery == null) "list.empty" else "list.noMatches")
-                else -> ""
+                state.searchQuery != null -> message("list.noMatches")
+                else -> message("list.empty")
             }
-            listStatus.isVisible = listStatus.text.isNotEmpty()
 
             val error = state.listError ?: state.detailError?.takeIf { state.selected == null }
             feedback.syncText(error?.message.orEmpty())
@@ -216,6 +188,17 @@ internal class IssuesPanel(
         } finally {
             updating = false
         }
+        // A short first page does not fill the list, so nothing could be scrolled to load the next one.
+        SwingUtilities.invokeLater(::loadMoreWhenAtEnd)
+    }
+
+    private fun loadMoreWhenAtEnd() {
+        val state = model.state.value
+        if (state.issues.next == null || state.listLoading || state.listError != null) return
+        if (state.writing || state.editor != null || !panel.isShowing) return
+        val bar = issueScroll.verticalScrollBar.model
+        val threshold = JBUI.scale(LOAD_MORE_DISTANCE)
+        if (bar.value + bar.extent >= bar.maximum - threshold) model.moreIssues()
     }
 
     private fun openSelectedIssue(focus: Boolean) {
@@ -227,21 +210,20 @@ internal class IssuesPanel(
     private fun submitSearch() {
         val state = model.state.value
         if (state.searchInput.isBlank() || state.writing || state.editor != null) return
+        searchField.addCurrentTextToHistory()
         model.search()
         if (model.state.value.selected != null) showDetails(false)
     }
 
-    private fun renderSignIn(state: IssuesState) {
-        signInLink.text = message(if (state.needsSignIn) "action.signInAgain" else "action.signIn")
-        signInLink.isVisible = contextSignIn || state.needsSignIn
-        signInLink.isEnabled = !state.writing
-    }
+    private companion object {
+        const val SEARCH_HISTORY = "dev.issuetoolwindow.search.history"
+        const val LOAD_MORE_DISTANCE = 120
 
-    private fun <T> renderer(display: (T?) -> String): ListCellRenderer<T> {
-        val renderer = DefaultListCellRenderer().apply { putClientProperty("html.disable", true) }
-        return ListCellRenderer { list, value, index, selected, focus ->
-            renderer.getListCellRendererComponent(list, display(value), index, selected, focus)
-        }
+        fun stateChipValue(filter: IssueFilter) = filter.takeIf { it != IssueFilter.ALL }
+
+        /** The default order shows as an empty chip unless the user picked it explicitly. */
+        fun sortChipValue(sort: IssueSort, shown: IssueSort?) =
+            if (sort == IssueSort.NEWEST && shown == null) null else sort
     }
 }
 

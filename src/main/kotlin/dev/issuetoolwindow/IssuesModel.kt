@@ -43,6 +43,7 @@ internal data class SelectionPicker(
 internal data class IssuesState(
     val connected: Boolean = false,
     val filter: IssueFilter = IssueFilter.OPEN,
+    val sort: IssueSort = IssueSort.NEWEST,
     val searchInput: String = "",
     val searchQuery: String? = null,
     val issues: Page<Issue> = Page(emptyList(), null),
@@ -112,6 +113,12 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         showList(current.searchQuery)
     }
 
+    fun sort(sort: IssueSort) {
+        if (current.writing || current.editor != null || sort == current.sort) return
+        update { copy(sort = sort) }
+        showList(current.searchQuery)
+    }
+
     fun editSearch(input: String) {
         if (!current.connected || current.writing || current.editor != null) return
         update { copy(searchInput = input) }
@@ -149,12 +156,13 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private fun loadList(next: String? = null) {
         val source = gateway ?: return
         val filter = current.filter
+        val sort = current.sort
         val query = current.searchQuery
         listJob?.cancel()
         update { copy(listLoading = true, listError = null) }
         listJob = scope.launch {
             try {
-                val page = if (query == null) source.issues(filter, next) else source.search(query, filter, next)
+                val page = if (query == null) source.issues(filter, sort, next) else source.search(query, filter, sort, next)
                 ensureActive()
                 update {
                     val items = if (next == null) page.items else (issues.items + page.items).distinctBy(Issue::number)

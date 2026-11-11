@@ -30,6 +30,16 @@ internal enum class IssueFilter(val apiValue: String, val messageKey: String) {
     fun includes(issue: Issue): Boolean = this == ALL || (this == OPEN) == issue.open
 }
 
+/** Order of the issue list; [apiSort] is the value both the issues and the search endpoint accept. */
+internal enum class IssueSort(val messageKey: String, val apiSort: String, val ascending: Boolean) {
+    NEWEST("sort.newest", "created", false),
+    OLDEST("sort.oldest", "created", true),
+    MOST_COMMENTED("sort.comments", "comments", false),
+    RECENTLY_UPDATED("sort.updated", "updated", false);
+
+    val apiDirection: String get() = if (ascending) "asc" else "desc"
+}
+
 internal data class Issue(
     val number: Long,
     val title: String,
@@ -39,6 +49,9 @@ internal data class Issue(
     val labels: List<String>,
     val assignees: List<String>,
     val createdAt: String? = null,
+    val commentCount: Int = 0,
+    /** Hex colors without `#` by label name, as far as GitHub reported them. */
+    val labelColors: Map<String, String> = emptyMap(),
 )
 
 internal sealed interface IssueActivity {
@@ -78,8 +91,8 @@ internal data class PullRequestActivity(
 internal data class Page<T>(val items: List<T>, val next: String?)
 
 internal interface IssuesGateway {
-    suspend fun issues(filter: IssueFilter, next: String?): Page<Issue>
-    suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue>
+    suspend fun issues(filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue>
+    suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue>
     suspend fun issue(number: Long): Issue
     suspend fun activity(number: Long, next: String?): Page<IssueActivity>
     suspend fun create(title: String, body: String?): Issue

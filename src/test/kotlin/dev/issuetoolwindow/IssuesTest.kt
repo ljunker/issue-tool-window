@@ -68,10 +68,11 @@ class IssuesTest {
         val uri = URI(url)
         assertEquals("/search/issues", uri.path)
         assertEquals(
-            "q=repo:owner/project is:issue in:title,body state:closed \"UI & café  state:open\"&per_page=30",
+            "q=repo:owner/project is:issue in:title,body state:closed \"UI & café  state:open\"&sort=created&order=desc&per_page=30",
             URLDecoder.decode(uri.rawQuery, Charsets.UTF_8),
         )
         assertFalse(URI(issueSearchUrl(repo, "text", IssueFilter.ALL)).query.contains("state:"))
+        assertTrue(issueSearchUrl(repo, "text", IssueFilter.ALL, IssueSort.OLDEST).endsWith("&sort=created&order=asc&per_page=30"))
 
         val next = "$url&page=2"
         val page = GithubApiRequest.Get.JsonSearchPage(url, RestIssue::class.java).extractResult(
@@ -85,13 +86,72 @@ class IssuesTest {
     }
 
     @Test
+    fun `issue list URL carries status and sort order`() {
+        val base = "https://api.github.com/repos/owner/project/issues"
+        assertEquals(
+            "$base?state=closed&sort=comments&direction=desc&per_page=30",
+            issueListUrl(base, IssueFilter.CLOSED, IssueSort.MOST_COMMENTED),
+        )
+        assertEquals(
+            "$base?state=open&sort=updated&direction=desc&per_page=30",
+            issueListUrl(base, IssueFilter.OPEN, IssueSort.RECENTLY_UPDATED),
+        )
+    }
+
+    @Test
+    fun `GitHub issue JSON maps comment count and label colors`() {
+        val request = GithubApiRequest.Get.JsonPage("https://api.github.com/example", RestIssue::class.java)
+        val issue = request.extractResult(
+            response(
+                """[{"number":7,"title":"Colored","state":"open","comments":3,"labels":[{"name":"bug","color":"d73a4a"},{"name":"plain"}]}]"""
+            )
+        ).items.single().toIssue()
+        assertEquals(3, issue.commentCount)
+        assertEquals(listOf("bug", "plain"), issue.labels)
+        assertEquals(mapOf("bug" to "d73a4a"), issue.labelColors)
+    }
+
+    @Test
+    fun `list rows describe number, creation date and author`() {
+        val issue = Issue(16, "Title", true, "ljunker", "", emptyList(), emptyList(), "2026-11-11T09:00:00Z")
+        assertEquals("#16 · created Today, by ljunker", issueMetaLine(issue) { "Today" })
+        assertEquals("#16 · by ljunker", issueMetaLine(issue.copy(createdAt = "not a date")) { "Today" })
+        assertEquals("#16", issueMetaLine(issue.copy(author = null, createdAt = null)) { "Today" })
+    }
+
+    @Test
+    fun `changing the sort reloads the list and is blocked while editing`() = runBlocking {
+        val issue = Issue(1, "Issue", true, null, "", emptyList(), emptyList())
+        val sorts = mutableListOf<IssueSort>()
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(issue) {
+            override suspend fun issues(filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> {
+                sorts += sort
+                return Page(listOf(issue), null)
+            }
+        })
+        await { !model.state.value.listLoading }
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+        model.sort(IssueSort.OLDEST)
+        await { !model.state.value.listLoading }
+        assertEquals(IssueSort.OLDEST, model.state.value.sort)
+        assertNull(model.state.value.selected)
+        model.sort(IssueSort.OLDEST)
+        model.startCreate()
+        model.sort(IssueSort.MOST_COMMENTED)
+        assertEquals(IssueSort.OLDEST, model.state.value.sort)
+        assertEquals(listOf(IssueSort.NEWEST, IssueSort.OLDEST), sorts)
+    }
+
+    @Test
     fun `search paginates with the active status and clears back to the regular list`() = runBlocking {
         val regular = Issue(1, "Regular", false, null, "", emptyList(), emptyList())
         val first = regular.copy(number = 2, title = "First match", open = true)
         val second = first.copy(number = 3, title = "Second match")
         val calls = mutableListOf<Triple<String, IssueFilter, String?>>()
         val gateway = object : StubGateway(regular) {
-            override suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue> {
+            override suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> {
                 calls += Triple(query, filter, next)
                 if (query == "failed") throw IssuesFailure("Search failed")
                 if (filter == IssueFilter.CLOSED) return Page(emptyList(), null)
@@ -140,7 +200,7 @@ class IssuesTest {
         val oldPage = CompletableDeferred<Page<Issue>>()
         val model = IssuesModel(this)
         model.connect(object : StubGateway(old) {
-            override suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue> =
+            override suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
                 if (query == "old") withContext(NonCancellable) {
                     started.complete(Unit)
                     withTimeout(3_000) { oldPage.await() }
@@ -254,7 +314,7 @@ class IssuesTest {
         val oldList = CompletableDeferred<Page<Issue>>()
         val oldDetail = CompletableDeferred<Issue>()
         val repoA = object : StubGateway(Issue(1, "Repo A", true, null, "", emptyList(), emptyList())) {
-            override suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue> =
+            override suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
                 withContext(NonCancellable) { withTimeout(3_000) { oldList.await() } }
 
             override suspend fun issue(number: Long): Issue = withContext(NonCancellable) { oldDetail.await() }
@@ -378,7 +438,7 @@ class IssuesTest {
         val firstIssue = initial.copy(number = 9, title = "Newer issue")
         var attempts = 0
         val gateway = object : StubGateway(initial) {
-            override suspend fun issues(filter: IssueFilter, next: String?): Page<Issue> =
+            override suspend fun issues(filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
                 if (next == null) Page(listOf(firstIssue), "page2") else Page(listOf(issue), "page3")
 
             override suspend fun updateIssue(number: Long, title: String, body: String): Issue {
@@ -709,10 +769,10 @@ class IssuesTest {
     }
 
     private open class StubGateway(var issue: Issue) : IssuesGateway {
-        override suspend fun issues(filter: IssueFilter, next: String?) =
+        override suspend fun issues(filter: IssueFilter, sort: IssueSort, next: String?) =
             Page(listOf(issue).filter(filter::includes), null)
 
-        override suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue> =
+        override suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
             error("Unexpected search")
 
         override suspend fun issue(number: Long) = issue
