@@ -282,6 +282,7 @@ internal class IssueDetailsPanel(
     private val toggleStatus = button("action.close", model::toggleStatus)
     private val edit = button("action.edit", model::startEdit)
     private val editLabels = button("action.labels", model::startLabels)
+    private val editAssignees = button("action.assignees", model::startAssignees)
     private val browser =
         ActionLink(message("action.browser")) { model.state.value.issue?.let { openOnGitHub(it.number) } }
     private val comment = textArea(3).apply {
@@ -294,19 +295,17 @@ internal class IssueDetailsPanel(
     private val description = textArea(5)
     private val save = button("action.create", model::saveEditor)
     private val cancel = button("action.cancel", model::cancelEditor)
-    private val labelsHeading = JBLabel().apply { font = font.deriveFont(Font.BOLD) }
-    private val labelSearch = JBTextField().apply {
-        emptyText.text = message("labels.search")
-        accessibleContext.accessibleName = message("labels.search")
-    }
-    private val labelList = CheckBoxList<String>().apply { accessibleContext.accessibleName = message("detail.labels") }
-    private val labelStatus = textArea(2).apply {
+    private val pickerHeading = JBLabel().apply { font = font.deriveFont(Font.BOLD) }
+    private val pickerSearch = JBTextField()
+    private val pickerList = CheckBoxList<String>()
+    private val pickerStatus = textArea(2).apply {
         isEditable = false
         isOpaque = false
         border = JBUI.Borders.empty()
     }
-    private val saveLabels = button("action.saveLabels", model::saveLabels)
-    private val cancelLabels = button("action.cancel", model::cancelLabels)
+    private val assignMe = button("action.assignMe", model::assignMe)
+    private val savePicker = button("action.saveLabels", model::savePicker)
+    private val cancelPicker = button("action.cancel", model::cancelPicker)
     private val feedback = textArea(2).apply { isEditable = false }
     private val feedbackScroll = JBScrollPane(feedback).apply { isVisible = false }
 
@@ -316,7 +315,7 @@ internal class IssueDetailsPanel(
             val state = model.state.value
             return when {
                 state.editor != null -> title
-                state.labelPicker != null -> labelSearch
+                state.picker != null -> pickerSearch
                 else -> issueText
             }
         }
@@ -324,8 +323,8 @@ internal class IssueDetailsPanel(
     private var updating = false
     private var renderedContent: IssueDetailsContent? = null
     private var wasEditing = false
-    private var wasPickingLabels = false
-    private var renderedLabels = emptyList<String>()
+    private var shownPicker: PickerKind? = null
+    private var renderedChoices = emptyList<String>()
 
     init {
         val commentHeading = labelFor("detail.addComment", comment).apply { font = font.deriveFont(Font.BOLD) }
@@ -333,7 +332,7 @@ internal class IssueDetailsPanel(
             border = JBUI.Borders.empty(0, 20)
         }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(stack(row(toggleStatus, edit, editLabels, browser), detailStatus), BorderLayout.NORTH)
+            add(stack(row(toggleStatus, edit, editLabels, editAssignees, browser), detailStatus), BorderLayout.NORTH)
             add(issueScroll, BorderLayout.CENTER)
             add(composer, BorderLayout.SOUTH)
         }
@@ -347,13 +346,13 @@ internal class IssueDetailsPanel(
         }
         details.add(detailPlaceholder, "empty")
         details.add(detail, "issue")
-        val labels = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(stack(labelsHeading, labelSearch, labelStatus), BorderLayout.NORTH)
-            add(JBScrollPane(labelList), BorderLayout.CENTER)
-            add(row(saveLabels, cancelLabels), BorderLayout.SOUTH)
+        val picker = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
+            add(stack(pickerHeading, pickerSearch, pickerStatus, row(assignMe)), BorderLayout.NORTH)
+            add(JBScrollPane(pickerList), BorderLayout.CENTER)
+            add(row(savePicker, cancelPicker), BorderLayout.SOUTH)
         }
         details.add(form, "editor")
-        details.add(labels, "labels")
+        details.add(picker, "picker")
         panel.add(details, BorderLayout.CENTER)
         panel.add(feedbackScroll, BorderLayout.SOUTH)
 
@@ -364,9 +363,9 @@ internal class IssueDetailsPanel(
         comment.onEdit { if (!updating) model.editComment(comment.text) }
         title.onEdit { if (!updating) updateDraft() }
         description.onEdit { if (!updating) updateDraft() }
-        labelSearch.onEdit { if (!updating) model.searchLabels(labelSearch.text) }
-        labelList.setCheckBoxListListener { index, _ ->
-            if (!updating) labelList.getItemAt(index)?.let(model::toggleLabel)
+        pickerSearch.onEdit { if (!updating) model.searchPicker(pickerSearch.text) }
+        pickerList.setCheckBoxListListener { index, _ ->
+            if (!updating) pickerList.getItemAt(index)?.let(model::togglePicked)
         }
     }
 
@@ -389,10 +388,10 @@ internal class IssueDetailsPanel(
                     if (!wasEditing && panel.isShowing) title.requestFocusInWindow()
                 }
 
-                state.labelPicker != null && state.issue != null -> {
-                    renderLabels(state, state.labelPicker)
-                    detailCards.show(details, "labels")
-                    if (!wasPickingLabels && panel.isShowing) labelSearch.requestFocusInWindow()
+                state.picker != null && state.issue != null -> {
+                    renderPicker(state, state.picker)
+                    detailCards.show(details, "picker")
+                    if (shownPicker != state.picker.kind && panel.isShowing) pickerSearch.requestFocusInWindow()
                 }
 
                 state.issue != null -> {
@@ -413,7 +412,7 @@ internal class IssueDetailsPanel(
                 }
             }
             wasEditing = editor != null
-            wasPickingLabels = editor == null && state.labelPicker != null
+            shownPicker = state.picker?.kind?.takeIf { editor == null && state.issue != null }
 
             val error = state.writeError ?: state.detailError
             val status = if (state.writing) message("feedback.writing")
@@ -450,34 +449,44 @@ internal class IssueDetailsPanel(
         toggleStatus.isEnabled = !state.writing && !state.needsSignIn
         edit.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editLabels.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
+        editAssignees.isEnabled = editLabels.isEnabled
         comment.syncText(state.commentDraft)
         comment.isEditable = !state.writing
         post.isEnabled = !state.writing && !state.needsSignIn && state.commentDraft.isNotBlank()
     }
 
-    private fun renderLabels(state: IssuesState, picker: LabelPicker) {
-        labelsHeading.text = message("labels.heading", picker.issueNumber.toString())
-        labelSearch.syncText(picker.query)
-        labelSearch.isEditable = !state.writing
+    private fun renderPicker(state: IssuesState, picker: SelectionPicker) {
+        val prefix = if (picker.kind == PickerKind.LABELS) "labels" else "assignees"
+        pickerHeading.text = message("$prefix.heading", picker.issueNumber.toString())
+        pickerSearch.emptyText.text = message("$prefix.search")
+        pickerSearch.accessibleContext.accessibleName = message("$prefix.search")
+        pickerList.accessibleContext.accessibleName =
+            message(if (picker.kind == PickerKind.LABELS) "detail.labels" else "detail.assignees")
+        pickerSearch.syncText(picker.query)
+        pickerSearch.isEditable = !state.writing
         val visible = picker.visible
-        if (renderedLabels != visible) {
-            renderedLabels = visible
-            labelList.setItems(visible) { it }
+        if (shownPicker != picker.kind || renderedChoices != visible) {
+            renderedChoices = visible
+            pickerList.setItems(visible) { it }
         }
-        visible.forEach { labelList.setItemSelected(it, it in picker.selected) }
-        labelList.isEnabled = !state.writing
-        labelList.repaint()
+        visible.forEach { pickerList.setItemSelected(it, it in picker.selected) }
+        pickerList.isEnabled = !state.writing
+        pickerList.repaint()
         val status = when {
-            picker.loading -> message("labels.loading")
-            picker.error != null -> listOfNotNull(message("labels.failed"), picker.error.message).joinToString("\n")
-            picker.available.isNullOrEmpty() && picker.original.isEmpty() -> message("labels.empty")
-            visible.isEmpty() -> message("labels.noMatches")
+            picker.loading -> message("$prefix.loading")
+            picker.error != null -> listOfNotNull(message("$prefix.failed"), picker.error.message).joinToString("\n")
+            picker.available.isNullOrEmpty() && picker.original.isEmpty() -> message("$prefix.empty")
+            visible.isEmpty() -> message("$prefix.noMatches")
             else -> ""
         }
-        labelStatus.syncText(status)
-        labelStatus.isVisible = status.isNotEmpty()
-        saveLabels.isEnabled = !state.writing && !state.needsSignIn && picker.changed
-        cancelLabels.isEnabled = !state.writing
+        pickerStatus.syncText(status)
+        pickerStatus.isVisible = status.isNotEmpty()
+        assignMe.isVisible = picker.kind == PickerKind.ASSIGNEES
+        assignMe.isEnabled = !state.writing && !state.needsSignIn && state.assignableViewer != null
+        savePicker.text =
+            message(if (picker.kind == PickerKind.LABELS) "action.saveLabels" else "action.saveAssignees")
+        savePicker.isEnabled = !state.writing && !state.needsSignIn && picker.changed
+        cancelPicker.isEnabled = !state.writing
     }
 
     private fun updateDraft() = model.editDraft(IssueDraft(title.text, description.text))

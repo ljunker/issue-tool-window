@@ -20,7 +20,11 @@ Unterstützt wird IntelliJ IDEA **2026.3** (Build-Reihe `263.*`).
 6. Ein Issue in der linken Liste auswählen, um Details und Kommentare im Editor-Tab **GitHub Issue** zu öffnen.
    **New Issue** öffnet dort das Formular für ein neues Issue. **Edit Issue** öffnet den Titel und den
    Markdown-Quelltext der Beschreibung zur Bearbeitung. **Edit Labels** zeigt alle Labels des Repositorys mit
-   Filterfeld; **Save Labels** fügt nur die angehakten Labels hinzu und entfernt nur die abgewählten. Im Tab stehen
+   Filterfeld; **Save Labels** fügt nur die angehakten Labels hinzu und entfernt nur die abgewählten. **Edit Assignees**
+   zeigt alle zuweisbaren Personen des Repositorys mit Filterfeld; **Save Assignees** ändert jede Person einzeln, sodass
+   auf GitHub parallel geänderte Zuständigkeiten erhalten bleiben. **Assign Me** weist das aktive Konto direkt zu, wenn
+   es zuweisbar ist. Danach zeigt der Tab die von GitHub gespeicherten Zuständigkeiten und nennt abgelehnte oder
+   ignorierte Änderungen. Im Tab stehen
    auch **Post Comment**, **Close Issue** und **Reopen Issue** zur Verfügung.
 
 ## Build und Abnahme

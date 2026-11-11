@@ -12,17 +12,21 @@ internal data class IssueDraft(val title: String = "", val body: String = "")
 
 internal data class IssueEditor(val draft: IssueDraft, val issueNumber: Long? = null)
 
-internal data class LabelPicker(
+internal enum class PickerKind { LABELS, ASSIGNEES }
+
+/** Checkbox selection of labels or assignees for one issue. */
+internal data class SelectionPicker(
+    val kind: PickerKind,
     val issueNumber: Long,
     val original: Set<String>,
     val selected: Set<String>,
-    /** Repository labels; `null` while they load or after loading failed. */
+    /** Values offered by the repository; `null` while they load or after loading failed. */
     val available: List<String>? = null,
     val query: String = "",
     val loading: Boolean = true,
     val error: IssuesFailure? = null,
 ) {
-    /** Repository labels plus labels of the issue that no longer exist in the repository, filtered by [query]. */
+    /** Repository values plus values of the issue that the repository no longer offers, filtered by [query]. */
     val visible: List<String>
         get() {
             val all = available.orEmpty()
@@ -54,10 +58,21 @@ internal data class IssuesState(
     val feedback: String? = null,
     val editor: IssueEditor? = null,
     val commentDraft: String = "",
-    val labelPicker: LabelPicker? = null,
+    val picker: SelectionPicker? = null,
+    /** Login of the active GitHub account. */
+    val viewer: String? = null,
 ) {
     val needsSignIn: Boolean
-        get() = listOf(listError, detailError, writeError, labelPicker?.error).any { it?.offerSignIn == true }
+        get() = listOf(listError, detailError, writeError, picker?.error).any { it?.offerSignIn == true }
+
+    /** The active account in the open assignee picker, if it is assignable and not yet selected. */
+    val assignableViewer: String?
+        get() {
+            val picker = picker?.takeIf { it.kind == PickerKind.ASSIGNEES } ?: return null
+            val viewer = viewer ?: return null
+            if (picker.selected.any { it.equals(viewer, ignoreCase = true) }) return null
+            return picker.available.orEmpty().firstOrNull { it.equals(viewer, ignoreCase = true) }
+        }
 }
 
 /** All model calls and state changes run on the tool window's UI scope. */
@@ -70,17 +85,17 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private var listJob: Job? = null
     private var detailJob: Job? = null
     private var writeJob: Job? = null
-    private var labelsJob: Job? = null
+    private var pickerJob: Job? = null
     private val commentDrafts = mutableMapOf<Long, String>()
 
-    fun connect(gateway: IssuesGateway?) {
+    fun connect(gateway: IssuesGateway?, viewer: String? = null) {
         listJob?.cancel()
         detailJob?.cancel()
         writeJob?.cancel()
-        labelsJob?.cancel()
+        pickerJob?.cancel()
         commentDrafts.clear()
         this.gateway = gateway
-        mutableState.value = IssuesState(connected = gateway != null)
+        mutableState.value = IssuesState(connected = gateway != null, viewer = viewer?.takeIf { gateway != null })
         if (gateway != null) loadList()
     }
 
@@ -155,7 +170,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     fun select(number: Long?) {
         if (current.writing || current.editor != null || current.selected == number) return
         detailJob?.cancel()
-        labelsJob?.cancel()
+        pickerJob?.cancel()
         update {
             copy(
                 selected = number,
@@ -166,7 +181,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
                 writeError = null,
                 feedback = null,
                 commentDraft = commentDrafts[number].orEmpty(),
-                labelPicker = null,
+                picker = null,
             )
         }
         if (number != null) loadDetail()
@@ -213,8 +228,8 @@ internal class IssuesModel(private val scope: CoroutineScope) {
 
     private fun openEditor(editor: IssueEditor) {
         if (gateway == null || current.writing || current.editor != null) return
-        labelsJob?.cancel()
-        update { copy(editor = editor, labelPicker = null, writeError = null, feedback = null) }
+        pickerJob?.cancel()
+        update { copy(editor = editor, picker = null, writeError = null, feedback = null) }
     }
 
     fun editDraft(draft: IssueDraft) {
@@ -310,16 +325,24 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         }
     }
 
-    fun startLabels() {
+    fun startLabels() = startPicker(PickerKind.LABELS, Issue::labels, IssuesGateway::labels)
+
+    fun startAssignees() = startPicker(PickerKind.ASSIGNEES, Issue::assignees, IssuesGateway::assignees)
+
+    private fun startPicker(
+        kind: PickerKind,
+        values: (Issue) -> List<String>,
+        load: suspend IssuesGateway.() -> List<String>,
+    ) {
         val source = gateway ?: return
         val issue = current.issue ?: return
-        if (current.writing || current.editor != null || current.labelPicker != null) return
-        val labels = issue.labels.toSet()
-        update { copy(labelPicker = LabelPicker(issue.number, labels, labels), writeError = null, feedback = null) }
-        labelsJob?.cancel()
-        labelsJob = scope.launch {
+        if (current.writing || current.editor != null || current.picker != null) return
+        val original = values(issue).toSet()
+        update { copy(picker = SelectionPicker(kind, issue.number, original, original), writeError = null, feedback = null) }
+        pickerJob?.cancel()
+        pickerJob = scope.launch {
             try {
-                val available = source.labels()
+                val available = source.load()
                 ensureActive()
                 updatePicker { copy(available = available, loading = false) }
             } catch (error: IssuesFailure) {
@@ -329,54 +352,82 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         }
     }
 
-    fun searchLabels(query: String) {
+    fun searchPicker(query: String) {
         updatePicker { copy(query = query) }
     }
 
-    fun toggleLabel(name: String) {
+    fun togglePicked(name: String) {
         if (current.writing) return
         updatePicker { copy(selected = if (name in selected) selected - name else selected + name) }
     }
 
-    fun cancelLabels() {
+    /** Adds the active account to the open assignee selection and saves it right away. */
+    fun assignMe() {
         if (current.writing) return
-        labelsJob?.cancel()
-        update { copy(labelPicker = null) }
+        val login = current.assignableViewer ?: return
+        updatePicker { copy(selected = selected + login) }
+        savePicker()
     }
 
-    fun saveLabels() {
-        val picker = current.labelPicker ?: return
-        if (!picker.changed) return cancelLabels()
+    fun cancelPicker() {
+        if (current.writing) return
+        pickerJob?.cancel()
+        update { copy(picker = null) }
+    }
+
+    fun savePicker() {
+        val picker = current.picker ?: return
+        if (!picker.changed) return cancelPicker()
         val number = picker.issueNumber
         val added = picker.added
         val removed = picker.removed
-        write(
-            { changeLabels(number, added, removed) },
-            // Some changes may have been saved before the failure, so show what GitHub stores now.
-            failed = {
-                labelsJob?.cancel()
-                update { copy(labelPicker = null) }
-                loadDetail()
-            },
-        ) { changed ->
-            labelsJob?.cancel()
-            val ignored = added.filter { it !in changed.labels } + removed.filter { it in changed.labels }
-            update {
-                copy(
-                    issue = changed,
-                    issues = issues.copy(items = issues.items.map { if (it.number == number) changed else it }),
-                    labelPicker = null,
-                    feedback = if (ignored.isEmpty()) message("feedback.labels", number) else null,
-                    writeError = if (ignored.isEmpty()) null
-                    else IssuesFailure(message("error.labelsIgnored", ignored.joinToString(", "))),
+        // Some changes may have been saved before the failure, so show what GitHub stores now.
+        val reload = {
+            pickerJob?.cancel()
+            update { copy(picker = null) }
+            loadDetail()
+        }
+        when (picker.kind) {
+            PickerKind.LABELS -> write({ changeLabels(number, added, removed) }, failed = reload) { changed ->
+                showSaved(changed, changed.labels, added, removed, emptyMap(), "feedback.labels", "error.labelsIgnored")
+            }
+
+            PickerKind.ASSIGNEES -> write({ changeAssignees(number, added, removed) }, failed = reload) { change ->
+                val issue = change.issue
+                showSaved(
+                    issue, issue.assignees, added, removed, change.failed, "feedback.assignees", "error.assigneesIgnored",
                 )
             }
         }
     }
 
-    private inline fun updatePicker(transform: LabelPicker.() -> LabelPicker) {
-        val picker = current.labelPicker ?: return
-        update { copy(labelPicker = picker.transform()) }
+    private fun showSaved(
+        changed: Issue,
+        stored: List<String>,
+        added: List<String>,
+        removed: List<String>,
+        failed: Map<String, IssuesFailure>,
+        savedKey: String,
+        ignoredKey: String,
+    ) {
+        pickerJob?.cancel()
+        val ignored = (added.filter { it !in stored } + removed.filter { it in stored }).filter { it !in failed }
+        val problems = failed.map { (name, error) -> message("error.changeFailed", name, error.message.orEmpty()) } +
+            listOfNotNull(ignored.takeIf { it.isNotEmpty() }?.let { message(ignoredKey, it.joinToString(", ")) })
+        update {
+            copy(
+                issue = changed,
+                issues = issues.copy(items = issues.items.map { if (it.number == changed.number) changed else it }),
+                picker = null,
+                feedback = if (problems.isEmpty()) message(savedKey, changed.number) else null,
+                writeError = problems.takeIf { it.isNotEmpty() }?.let { IssuesFailure(it.joinToString("\n")) },
+            )
+        }
+    }
+
+    private inline fun updatePicker(transform: SelectionPicker.() -> SelectionPicker) {
+        val picker = current.picker ?: return
+        update { copy(picker = picker.transform()) }
     }
 
     private fun <T> write(
