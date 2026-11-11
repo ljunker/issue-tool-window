@@ -86,6 +86,7 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
     private var viewing = false
     private var connectedTo: Pair<Repository, GithubAccount>? = null
     private val avatars = mutableMapOf<String, Icon?>()
+    private var savedSettings: IssueListSettings? = null
 
     init {
         selector.showLoading()
@@ -127,6 +128,7 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
         scope.launch {
             model.state.collect { state ->
                 list.render(state)
+                if (state.connected) saveListSettings(state.settings)
                 if (state.selected == null && state.editor == null) closeDetails()
                 ActivityTracker.getInstance().inc()
             }
@@ -199,7 +201,11 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
         val connection = if (viewing && repo != null && selected != null) repo to selected else null
         if (connectedTo != connection) {
             connectedTo = connection
-            model.connect(connection?.let { (repo, account) -> GithubIssuesGateway(repo, account) }, selected?.name)
+            model.connect(
+                connection?.let { (repo, account) -> GithubIssuesGateway(repo, account) },
+                selected?.name,
+                readListSettings(properties::getValue),
+            )
         }
         if (contextLoaded) {
             selector.show(repositories, remoteNames, repo, accounts, selected, ::avatar)
@@ -207,6 +213,15 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
         cards.show(panel, if (connection != null) ISSUES_CARD else SELECT_CARD)
         updateTitle()
         ActivityTracker.getInstance().inc()
+    }
+
+    /** Keeps status, order, label and assignee of the list per project; the search text is not saved. */
+    private fun saveListSettings(settings: IssueListSettings) {
+        if (settings == savedSettings) return
+        savedSettings = settings
+        writeListSettings(settings) { key, value ->
+            if (value == null) properties.unsetValue(key) else properties.setValue(key, value)
+        }
     }
 
     private fun updateTitle() {
