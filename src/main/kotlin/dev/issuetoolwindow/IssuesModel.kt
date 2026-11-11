@@ -44,6 +44,7 @@ internal data class IssuesState(
     val connected: Boolean = false,
     val filter: IssueFilter = IssueFilter.OPEN,
     val sort: IssueSort = IssueSort.NEWEST,
+    val criteria: IssueCriteria = IssueCriteria(),
     val searchInput: String = "",
     val searchQuery: String? = null,
     val issues: Page<Issue> = Page(emptyList(), null),
@@ -63,6 +64,9 @@ internal data class IssuesState(
     /** Login of the active GitHub account. */
     val viewer: String? = null,
 ) {
+    /** Whether [issue] belongs in the list with the active status, label and assignee filters. */
+    fun shows(issue: Issue): Boolean = filter.includes(issue) && criteria.includes(issue)
+
     val needsSignIn: Boolean
         get() = listOf(listError, detailError, writeError, picker?.error).any { it?.offerSignIn == true }
 
@@ -88,6 +92,8 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private var writeJob: Job? = null
     private var pickerJob: Job? = null
     private val commentDrafts = mutableMapOf<Long, String>()
+    private var labelOptions: List<String>? = null
+    private var assigneeOptions: List<String>? = null
 
     fun connect(gateway: IssuesGateway?, viewer: String? = null) {
         listJob?.cancel()
@@ -95,6 +101,8 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         writeJob?.cancel()
         pickerJob?.cancel()
         commentDrafts.clear()
+        labelOptions = null
+        assigneeOptions = null
         this.gateway = gateway
         mutableState.value = IssuesState(connected = gateway != null, viewer = viewer?.takeIf { gateway != null })
         if (gateway != null) loadList()
@@ -111,6 +119,33 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         if (current.writing || current.editor != null || filter == current.filter) return
         update { copy(filter = filter) }
         showList(current.searchQuery)
+    }
+
+    fun filterLabel(label: String?) = criteria(current.criteria.copy(label = label))
+
+    fun filterAssignee(login: String?) = criteria(current.criteria.copy(assignee = login))
+
+    private fun criteria(criteria: IssueCriteria) {
+        if (!current.connected || current.writing || current.editor != null || criteria == current.criteria) return
+        update { copy(criteria = criteria) }
+        showList(current.searchQuery)
+    }
+
+    /** Labels of the connected repository to filter by, loaded once per connection. */
+    suspend fun labelFilterOptions(): List<String> {
+        val source = gateway ?: return emptyList()
+        return labelOptions ?: source.labels().also { if (gateway === source) labelOptions = it }
+    }
+
+    /**
+     * People of the connected repository to filter by, loaded once per connection. The active account comes first,
+     * so it can be offered as "Assigned to me" even when the repository does not list it.
+     */
+    suspend fun assigneeFilterOptions(): List<String> {
+        val source = gateway ?: return emptyList()
+        val people = assigneeOptions ?: source.assignees().also { if (gateway === source) assigneeOptions = it }
+        val viewer = current.viewer ?: return people
+        return listOf(viewer) + people.filterNot { it.equals(viewer, ignoreCase = true) }
     }
 
     fun sort(sort: IssueSort) {
@@ -157,12 +192,14 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         val source = gateway ?: return
         val filter = current.filter
         val sort = current.sort
+        val criteria = current.criteria
         val query = current.searchQuery
         listJob?.cancel()
         update { copy(listLoading = true, listError = null) }
         listJob = scope.launch {
             try {
-                val page = if (query == null) source.issues(filter, sort, next) else source.search(query, filter, sort, next)
+                val page = if (query == null) source.issues(filter, sort, criteria, next)
+                else source.search(query, filter, sort, criteria, next)
                 ensureActive()
                 update {
                     val items = if (next == null) page.items else (issues.items + page.items).distinctBy(Issue::number)
@@ -263,6 +300,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
             update {
                 copy(
                     filter = IssueFilter.OPEN,
+                    criteria = IssueCriteria(),
                     searchInput = "",
                     searchQuery = null,
                     issues = Page((listOf(created) + issues.items.filter { it.open }).distinctBy(Issue::number), null),
@@ -285,8 +323,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
             detailJob?.cancel()
             update {
                 val updatedList = if (searchQuery != null) Page(emptyList(), null) else {
-                    issues.copy(items = issues.items.map { if (it.number == number) changed else it }
-                        .filter(filter::includes))
+                    issues.copy(items = issues.items.map { if (it.number == number) changed else it }.filter(::shows))
                 }
                 copy(
                     issue = changed,
@@ -323,7 +360,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         write({ setOpen(issue.number, !issue.open) }) { changed ->
             update {
                 val items =
-                    issues.items.map { if (it.number == changed.number) changed else it }.filter(filter::includes)
+                    issues.items.map { if (it.number == changed.number) changed else it }.filter(::shows)
                 copy(
                     issue = changed,
                     issues = issues.copy(items = items),
@@ -425,7 +462,9 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         update {
             copy(
                 issue = changed,
-                issues = issues.copy(items = issues.items.map { if (it.number == changed.number) changed else it }),
+                issues = issues.copy(
+                    items = issues.items.map { if (it.number == changed.number) changed else it }.filter(::shows),
+                ),
                 picker = null,
                 feedback = if (problems.isEmpty()) message(savedKey, changed.number) else null,
                 writeError = problems.takeIf { it.isNotEmpty() }?.let { IssuesFailure(it.joinToString("\n")) },

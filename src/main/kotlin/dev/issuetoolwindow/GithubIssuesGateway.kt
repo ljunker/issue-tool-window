@@ -20,14 +20,32 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
     private val assigneesUrl =
         URI("https", "api.github.com", "/repos/${repository.fullName}/assignees", "per_page=100", null).toASCIIString()
 
-    override suspend fun issues(filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
-        firstPageWithIssues(next ?: issueListUrl(issuesUrl, filter, sort)) { url ->
+    override suspend fun issues(
+        filter: IssueFilter,
+        sort: IssueSort,
+        criteria: IssueCriteria,
+        next: String?,
+    ): Page<Issue> {
+        // The issues endpoint separates labels by commas, so only the search can filter by such a label.
+        if (criteria.label?.contains(',') == true) {
+            return searchPages(next ?: issueSearchUrl(repository, null, filter, sort, criteria))
+        }
+        return firstPageWithIssues(next ?: issueListUrl(issuesUrl, filter, sort, criteria)) { url ->
             val page = request(GithubApiRequest.Get.JsonPage<RestIssue>(pageUrl(url), RestIssue::class.java, ACCEPT))
             Page(page.items, page.nextLink)
         }
+    }
 
-    override suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
-        firstPageWithIssues(next ?: issueSearchUrl(repository, query, filter, sort)) { url ->
+    override suspend fun search(
+        query: String,
+        filter: IssueFilter,
+        sort: IssueSort,
+        criteria: IssueCriteria,
+        next: String?,
+    ): Page<Issue> = searchPages(next ?: issueSearchUrl(repository, query, filter, sort, criteria))
+
+    private suspend fun searchPages(start: String): Page<Issue> =
+        firstPageWithIssues(start) { url ->
             val page = request(GithubApiRequest.Get.JsonSearchPage(pageUrl(url), RestIssue::class.java, ACCEPT))
             Page(page.items, page.nextLink)
         }
@@ -176,24 +194,40 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
     }
 }
 
-internal fun issueListUrl(issuesUrl: String, filter: IssueFilter, sort: IssueSort): String =
-    "$issuesUrl?state=${filter.apiValue}&sort=${sort.apiSort}&direction=${sort.apiDirection}&per_page=30"
+internal fun issueListUrl(
+    issuesUrl: String,
+    filter: IssueFilter,
+    sort: IssueSort,
+    criteria: IssueCriteria = IssueCriteria(),
+): String = buildString {
+    append("$issuesUrl?state=${filter.apiValue}&sort=${sort.apiSort}&direction=${sort.apiDirection}")
+    criteria.label?.let { append("&labels=").append(URLEncoder.encode(it, Charsets.UTF_8)) }
+    criteria.assignee?.let { append("&assignee=").append(URLEncoder.encode(it, Charsets.UTF_8)) }
+    append("&per_page=30")
+}
 
+/** Searches the issues of [repository]; without a [query] only the status, label and assignee qualifiers apply. */
 internal fun issueSearchUrl(
     repository: Repository,
-    query: String,
+    query: String?,
     filter: IssueFilter,
     sort: IssueSort = IssueSort.NEWEST,
+    criteria: IssueCriteria = IssueCriteria(),
 ): String {
     val terms = buildString {
-        append("repo:${repository.fullName} is:issue in:title,body")
+        append("repo:${repository.fullName} is:issue")
+        if (query != null) append(" in:title,body")
         if (filter != IssueFilter.ALL) append(" state:${filter.apiValue}")
-        // Keep user text inside the phrase so it cannot change the repository or status qualifiers.
-        append(" \"").append(query.replace('"', ' ').replace('\\', ' ')).append('"')
+        // Quoted values cannot add qualifiers that change the repository or status.
+        criteria.label?.let { append(" label:").append(quoted(it)) }
+        criteria.assignee?.let { append(" assignee:").append(quoted(it)) }
+        if (query != null) append(' ').append(quoted(query))
     }
     return "https://api.github.com/search/issues?q=${URLEncoder.encode(terms, Charsets.UTF_8)}" +
         "&sort=${sort.apiSort}&order=${sort.apiDirection}&per_page=30"
 }
+
+private fun quoted(value: String): String = "\"" + value.replace('"', ' ').replace('\\', ' ') + "\""
 
 internal fun issueLabelUrl(repository: Repository, number: Long, label: String): String {
     // A label name is one path segment, so slashes and spaces must be encoded as well.

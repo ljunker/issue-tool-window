@@ -7,7 +7,7 @@
     <p>The <b>GitHub Issues</b> tool window lists the issues of the project's GitHub.com remotes and uses the GitHub
     account already configured for the <b>Pull Requests</b> tool window.</p>
     <ul>
-      <li>Filter by open, closed or all issues and search in title and description</li>
+      <li>Filter by status, label and assignee (including issues assigned to you) and search in title and description</li>
       <li>Open an issue directly with <code>#42</code></li>
       <li>Read issue details, Markdown descriptions, comments and activity in an editor tab</li>
       <li>Create and edit issues, post comments, close and reopen issues</li>

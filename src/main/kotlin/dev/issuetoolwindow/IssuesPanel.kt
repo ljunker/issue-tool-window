@@ -7,10 +7,13 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.CheckBoxList
+import com.intellij.collaboration.ui.codereview.list.search.ChooserPopupUtil
 import com.intellij.collaboration.ui.codereview.list.search.DropDownComponentFactory
+import com.intellij.collaboration.ui.util.popup.PopupItemPresentation
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.ScrollPaneFactory
 import com.intellij.ui.SearchTextField
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBHtmlPane
@@ -26,6 +29,7 @@ import com.intellij.util.ui.JBUI
 import dev.issuetoolwindow.IssuesBundle.message
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.launch
 import java.awt.BorderLayout
 import java.awt.CardLayout
@@ -68,6 +72,8 @@ internal class IssuesPanel(
     }
     private val stateChip = MutableStateFlow<IssueFilter?>(IssueFilter.OPEN)
     private val sortChip = MutableStateFlow<IssueSort?>(null)
+    private val labelChip = MutableStateFlow<String?>(null)
+    private val assigneeChip = MutableStateFlow<String?>(null)
     private val issueRows = DefaultListModel<Issue>()
     private val issueList = JBList(issueRows).apply {
         selectionMode = ListSelectionModel.SINGLE_SELECTION
@@ -93,6 +99,19 @@ internal class IssuesPanel(
                     onSelect = {},
                     valuePresenter = { filter: IssueFilter -> message(filter.messageKey) },
                 )
+            )
+            add(
+                DropDownComponentFactory(labelChip).create(scope, message("filter.label"), { label: String -> label }) { point ->
+                    choose(point, model::labelFilterOptions) { PopupItemPresentation.Simple(it) }
+                }
+            )
+            add(
+                DropDownComponentFactory(assigneeChip).create(scope, message("filter.assignee"), ::assigneeName) { point ->
+                    choose(point, model::assigneeFilterOptions) { login ->
+                        if (isViewer(login)) PopupItemPresentation.Simple(message("filter.assignee.me"), null, login)
+                        else PopupItemPresentation.Simple(login)
+                    }
+                }
             )
             add(
                 DropDownComponentFactory(sortChip).create(
@@ -132,6 +151,18 @@ internal class IssuesPanel(
                 sortChip.value = sortChipValue(model.state.value.sort, chosen)
             }
         }
+        scope.launch {
+            labelChip.collect { chosen ->
+                model.filterLabel(chosen)
+                labelChip.value = model.state.value.criteria.label
+            }
+        }
+        scope.launch {
+            assigneeChip.collect { chosen ->
+                model.filterAssignee(chosen)
+                assigneeChip.value = model.state.value.criteria.assignee
+            }
+        }
         searchField.textEditor.addActionListener { submitSearch() }
         searchField.addDocumentListener(object : DocumentAdapter() {
             override fun textChanged(e: DocumentEvent) {
@@ -165,6 +196,8 @@ internal class IssuesPanel(
             val canNavigate = !state.writing && state.editor == null
             stateChip.value = stateChipValue(state.filter)
             sortChip.value = sortChipValue(state.sort, sortChip.value)
+            labelChip.value = state.criteria.label
+            assigneeChip.value = state.criteria.assignee
             if (searchField.text != state.searchInput) searchField.text = state.searchInput
             searchField.isEnabled = canNavigate
             issueList.isEnabled = canNavigate
@@ -191,6 +224,28 @@ internal class IssuesPanel(
         // A short first page does not fill the list, so nothing could be scrolled to load the next one.
         SwingUtilities.invokeLater(::loadMoreWhenAtEnd)
     }
+
+    /** Shows the options of the connected repository, so a repository change never offers stale values. */
+    private suspend fun choose(
+        point: RelativePoint,
+        options: suspend () -> List<String>,
+        presentation: (String) -> PopupItemPresentation,
+    ): String? {
+        val loaded = flow {
+            emit(
+                try {
+                    Result.success(options())
+                } catch (error: IssuesFailure) {
+                    Result.failure(error)
+                }
+            )
+        }
+        return ChooserPopupUtil.showAsyncChooserPopup(point, loaded, presentation)
+    }
+
+    private fun isViewer(login: String) = model.state.value.viewer?.equals(login, ignoreCase = true) == true
+
+    private fun assigneeName(login: String) = if (isViewer(login)) message("filter.assignee.meShort") else login
 
     private fun loadMoreWhenAtEnd() {
         val state = model.state.value

@@ -112,6 +112,145 @@ class IssuesTest {
     }
 
     @Test
+    fun `issue list and search URLs combine status, label and assignee`() {
+        val base = "https://api.github.com/repos/owner/project/issues"
+        assertEquals(
+            "$base?state=open&sort=created&direction=desc&labels=good+first+issue%2Fui&assignee=alice&per_page=30",
+            issueListUrl(base, IssueFilter.OPEN, IssueSort.NEWEST, IssueCriteria("good first issue/ui", "alice")),
+        )
+        val repo = Repository("owner", "project")
+        val search = issueSearchUrl(repo, "crash", IssueFilter.CLOSED, IssueSort.NEWEST, IssueCriteria("bug \"x", "bob"))
+        assertEquals(
+            "repo:owner/project is:issue in:title,body state:closed label:\"bug  x\" assignee:\"bob\" \"crash\"",
+            URLDecoder.decode(URI(search).rawQuery.substringAfter("q=").substringBefore('&'), Charsets.UTF_8),
+        )
+        assertEquals(
+            "repo:owner/project is:issue label:\"a,b\"",
+            URLDecoder.decode(
+                URI(issueSearchUrl(repo, null, IssueFilter.ALL, IssueSort.NEWEST, IssueCriteria("a,b")))
+                    .rawQuery.substringAfter("q=").substringBefore('&'),
+                Charsets.UTF_8,
+            ),
+        )
+    }
+
+    @Test
+    fun `label and assignee filters combine with status and search and survive loading more pages`() = runBlocking {
+        val first = Issue(1, "First", true, null, "", listOf("bug"), listOf("alice"))
+        val second = first.copy(number = 2, title = "Second")
+        val listCalls = mutableListOf<Pair<IssueCriteria, String?>>()
+        val searchCalls = mutableListOf<Pair<IssueCriteria, IssueFilter>>()
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(first) {
+            override suspend fun issues(
+                filter: IssueFilter,
+                sort: IssueSort,
+                criteria: IssueCriteria,
+                next: String?,
+            ): Page<Issue> {
+                listCalls += criteria to next
+                return if (next == null) Page(listOf(first), "page2") else Page(listOf(second), null)
+            }
+
+            override suspend fun search(
+                query: String,
+                filter: IssueFilter,
+                sort: IssueSort,
+                criteria: IssueCriteria,
+                next: String?,
+            ): Page<Issue> {
+                searchCalls += criteria to filter
+                return Page(emptyList(), null)
+            }
+        }, viewer = "alice")
+        await { !model.state.value.listLoading }
+        model.filterLabel("bug")
+        await { !model.state.value.listLoading }
+        model.filterAssignee("alice")
+        await { !model.state.value.listLoading }
+        model.moreIssues()
+        await { !model.state.value.listLoading }
+        val both = IssueCriteria("bug", "alice")
+        assertEquals(
+            listOf(IssueCriteria() to null, IssueCriteria("bug") to null, both to null, both to "page2"),
+            listCalls,
+        )
+        assertEquals(listOf(first, second), model.state.value.issues.items)
+
+        model.filter(IssueFilter.CLOSED)
+        await { !model.state.value.listLoading }
+        model.editSearch("crash")
+        model.search()
+        await { !model.state.value.listLoading }
+        assertEquals(both to IssueFilter.CLOSED, searchCalls.single())
+
+        model.filterLabel(null)
+        await { !model.state.value.listLoading }
+        assertEquals(IssueCriteria(assignee = "alice"), model.state.value.criteria)
+        assertEquals(IssueCriteria(assignee = "alice") to IssueFilter.CLOSED, searchCalls.last())
+
+        model.startCreate()
+        model.filterAssignee(null)
+        assertEquals(IssueCriteria(assignee = "alice"), model.state.value.criteria)
+    }
+
+    @Test
+    fun `filter options come from the connected repository and offer the active account first`() = runBlocking {
+        val issue = Issue(1, "Issue", true, null, "", emptyList(), emptyList())
+        var labelLoads = 0
+        val repoA = object : StubGateway(issue) {
+            override suspend fun labels(): List<String> = listOf("bug").also { labelLoads++ }
+            override suspend fun assignees() = listOf("bob", "Alice")
+        }
+        val repoB = object : StubGateway(issue) {
+            override suspend fun labels() = listOf("docs")
+            override suspend fun assignees() = listOf("carol")
+        }
+        val model = IssuesModel(this)
+        model.connect(repoA, viewer = "alice")
+        await { !model.state.value.listLoading }
+        model.filterLabel("bug")
+        await { !model.state.value.listLoading }
+        assertEquals(listOf("bug"), model.labelFilterOptions())
+        assertEquals(listOf("bug"), model.labelFilterOptions())
+        assertEquals(1, labelLoads)
+        assertEquals(listOf("alice", "bob"), model.assigneeFilterOptions())
+
+        model.connect(repoB, viewer = "alice")
+        await { !model.state.value.listLoading }
+        assertEquals(IssueCriteria(), model.state.value.criteria)
+        assertEquals(listOf("docs"), model.labelFilterOptions())
+        assertEquals(listOf("alice", "carol"), model.assigneeFilterOptions())
+    }
+
+    @Test
+    fun `an issue that no longer matches the label filter leaves the list after saving labels`() = runBlocking {
+        val initial = Issue(4, "Issue", true, null, "", listOf("bug"), emptyList())
+        val gateway = object : StubGateway(initial) {
+            override suspend fun labels() = listOf("bug", "docs")
+
+            override suspend fun changeLabels(number: Long, add: Collection<String>, remove: Collection<String>): Issue {
+                issue = issue.copy(labels = issue.labels - remove.toSet() + add)
+                return issue
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        model.filterLabel("BUG")
+        await { !model.state.value.listLoading }
+        assertEquals(listOf(initial), model.state.value.issues.items)
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+        model.startLabels()
+        await { model.state.value.picker?.loading == false }
+        model.togglePicked("bug")
+        model.savePicker()
+        await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
+        assertTrue(model.state.value.issues.items.isEmpty())
+        assertEquals(emptyList(), model.state.value.issue?.labels)
+    }
+
+    @Test
     fun `list rows describe number, creation date and author`() {
         val issue = Issue(16, "Title", true, "ljunker", "", emptyList(), emptyList(), "2026-11-11T09:00:00Z")
         assertEquals("#16 · created Today, by ljunker", issueMetaLine(issue) { "Today" })
@@ -125,7 +264,7 @@ class IssuesTest {
         val sorts = mutableListOf<IssueSort>()
         val model = IssuesModel(this)
         model.connect(object : StubGateway(issue) {
-            override suspend fun issues(filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> {
+            override suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?): Page<Issue> {
                 sorts += sort
                 return Page(listOf(issue), null)
             }
@@ -151,7 +290,13 @@ class IssuesTest {
         val second = first.copy(number = 3, title = "Second match")
         val calls = mutableListOf<Triple<String, IssueFilter, String?>>()
         val gateway = object : StubGateway(regular) {
-            override suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> {
+            override suspend fun search(
+                query: String,
+                filter: IssueFilter,
+                sort: IssueSort,
+                criteria: IssueCriteria,
+                next: String?,
+            ): Page<Issue> {
                 calls += Triple(query, filter, next)
                 if (query == "failed") throw IssuesFailure("Search failed")
                 if (filter == IssueFilter.CLOSED) return Page(emptyList(), null)
@@ -200,7 +345,13 @@ class IssuesTest {
         val oldPage = CompletableDeferred<Page<Issue>>()
         val model = IssuesModel(this)
         model.connect(object : StubGateway(old) {
-            override suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
+            override suspend fun search(
+                query: String,
+                filter: IssueFilter,
+                sort: IssueSort,
+                criteria: IssueCriteria,
+                next: String?,
+            ): Page<Issue> =
                 if (query == "old") withContext(NonCancellable) {
                     started.complete(Unit)
                     withTimeout(3_000) { oldPage.await() }
@@ -314,7 +465,13 @@ class IssuesTest {
         val oldList = CompletableDeferred<Page<Issue>>()
         val oldDetail = CompletableDeferred<Issue>()
         val repoA = object : StubGateway(Issue(1, "Repo A", true, null, "", emptyList(), emptyList())) {
-            override suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
+            override suspend fun search(
+                query: String,
+                filter: IssueFilter,
+                sort: IssueSort,
+                criteria: IssueCriteria,
+                next: String?,
+            ): Page<Issue> =
                 withContext(NonCancellable) { withTimeout(3_000) { oldList.await() } }
 
             override suspend fun issue(number: Long): Issue = withContext(NonCancellable) { oldDetail.await() }
@@ -438,7 +595,7 @@ class IssuesTest {
         val firstIssue = initial.copy(number = 9, title = "Newer issue")
         var attempts = 0
         val gateway = object : StubGateway(initial) {
-            override suspend fun issues(filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
+            override suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?): Page<Issue> =
                 if (next == null) Page(listOf(firstIssue), "page2") else Page(listOf(issue), "page3")
 
             override suspend fun updateIssue(number: Long, title: String, body: String): Issue {
@@ -769,11 +926,16 @@ class IssuesTest {
     }
 
     private open class StubGateway(var issue: Issue) : IssuesGateway {
-        override suspend fun issues(filter: IssueFilter, sort: IssueSort, next: String?) =
-            Page(listOf(issue).filter(filter::includes), null)
+        override suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?) =
+            Page(listOf(issue).filter { filter.includes(it) && criteria.includes(it) }, null)
 
-        override suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue> =
-            error("Unexpected search")
+        override suspend fun search(
+            query: String,
+            filter: IssueFilter,
+            sort: IssueSort,
+            criteria: IssueCriteria,
+            next: String?,
+        ): Page<Issue> = error("Unexpected search")
 
         override suspend fun issue(number: Long) = issue
         override suspend fun activity(number: Long, next: String?) = Page<IssueActivity>(emptyList(), null)
