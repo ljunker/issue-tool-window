@@ -41,7 +41,39 @@ internal data class Issue(
     val createdAt: String? = null,
 )
 
-internal data class Comment(val id: Long, val author: String?, val body: String, val createdAt: String?)
+internal sealed interface IssueActivity {
+    val id: String
+    val author: String?
+    val createdAt: String?
+}
+
+internal data class Comment(
+    override val id: String,
+    override val author: String?,
+    val body: String,
+    override val createdAt: String?,
+) : IssueActivity
+
+internal data class LabelActivity(
+    override val id: String,
+    override val author: String?,
+    override val createdAt: String?,
+    val name: String,
+    val color: String?,
+    val added: Boolean,
+) : IssueActivity
+
+internal data class PullRequestActivity(
+    override val id: String,
+    override val author: String?,
+    override val createdAt: String?,
+    val number: Long,
+    val title: String,
+    val url: String,
+    val relation: Relation,
+) : IssueActivity {
+    enum class Relation { REFERENCES, CLOSES, LINKS, UNLINKS }
+}
 
 internal data class Page<T>(val items: List<T>, val next: String?)
 
@@ -49,7 +81,7 @@ internal interface IssuesGateway {
     suspend fun issues(filter: IssueFilter, next: String?): Page<Issue>
     suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue>
     suspend fun issue(number: Long): Issue
-    suspend fun comments(number: Long, next: String?): Page<Comment>
+    suspend fun activity(number: Long, next: String?): Page<IssueActivity>
     suspend fun create(title: String, body: String?): Issue
     suspend fun updateIssue(number: Long, title: String, body: String): Issue
     suspend fun addComment(number: Long, body: String): Comment

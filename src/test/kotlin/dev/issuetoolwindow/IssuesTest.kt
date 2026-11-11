@@ -163,7 +163,7 @@ class IssuesTest {
         val closed = RestIssue(42, "Closed issue", "closed")
         val pullRequest = GithubApiRequest.Get.Optional.Json("https://api.github.com/example", RestIssue::class.java)
             .extractResult(response("""{"number":43,"title":"PR","state":"open","pull_request":{}}"""))
-        val commentRequests = mutableListOf<Long>()
+        val activityRequests = mutableListOf<Long>()
         val model = IssuesModel(this)
         model.connect(object : StubGateway(closed.toIssue()) {
             override suspend fun issue(number: Long): Issue = when (number) {
@@ -172,9 +172,9 @@ class IssuesTest {
                 else -> null
             }.toOpenedIssue(number)
 
-            override suspend fun comments(number: Long, next: String?): Page<Comment> {
-                commentRequests += number
-                return super.comments(number, next)
+            override suspend fun activity(number: Long, next: String?): Page<IssueActivity> {
+                activityRequests += number
+                return super.activity(number, next)
             }
         })
         await { !model.state.value.listLoading }
@@ -196,7 +196,57 @@ class IssuesTest {
         await { !model.state.value.detailLoading }
         assertNull(model.state.value.issue)
         assertTrue(model.state.value.detailError?.message.orEmpty().contains("Issue #44 was not found"))
-        assertEquals(listOf(42L), commentRequests)
+        assertEquals(listOf(42L), activityRequests)
+    }
+
+    @Test
+    fun `GraphQL activity keeps label changes and distinguishes closing pull requests from references`() {
+        val page = issueActivityRequest(Repository("owner", "project"), 4, null).extractResult(response("""
+            {"data":{"repository":{"issue":{"timeline":{
+              "page_info":{"has_next_page":true,"end_cursor":"next"},
+              "nodes":[
+                {"kind":"LabeledEvent","id":"label","actor":{"login":"alice"},"created_at":"2026-11-11T09:00:00Z","label":{"name":"bug","color":"a2eeef"}},
+                {"kind":"IssueComment","id":"comment","body":"Looks good"},
+                {"kind":"CrossReferencedEvent","id":"closing","will_close_target":true,"source":{"number":14,"title":"Fix issue","url":"https://github.com/owner/project/pull/14"}},
+                {"kind":"CrossReferencedEvent","id":"mention","will_close_target":false,"source":{"number":15,"title":"Related change","url":"https://github.com/owner/project/pull/15"}},
+                {"kind":"CrossReferencedEvent","id":"issue-reference","source":{}},
+                null,
+                {"kind":"UnlabeledEvent","id":"removed","label":{"name":"bug","color":"a2eeef"}}
+              ]
+            }}}}}
+        """.trimIndent())).toPage(null)
+
+        assertEquals("next", page.next)
+        assertEquals(listOf("label", "comment", "closing", "mention", "removed"), page.items.map(IssueActivity::id))
+        assertEquals(LabelActivity("label", "alice", "2026-11-11T09:00:00Z", "bug", "a2eeef", true), page.items[0])
+        assertEquals(Comment("comment", null, "Looks good", null), page.items[1])
+        assertEquals(PullRequestActivity.Relation.CLOSES, (page.items[2] as PullRequestActivity).relation)
+        assertEquals(PullRequestActivity.Relation.REFERENCES, (page.items[3] as PullRequestActivity).relation)
+        assertFalse((page.items[4] as LabelActivity).added)
+    }
+
+    @Test
+    fun `loading more activity keeps the timeline order and skips repeated nodes`() = runBlocking {
+        val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
+        val label = LabelActivity("label", "alice", null, "bug", null, true)
+        val comment = Comment("comment", "bob", "A comment", null)
+        val pr = PullRequestActivity("pr", "alice", null, 14, "Fix", "https://github.com/owner/project/pull/14",
+            PullRequestActivity.Relation.CLOSES)
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(issue) {
+            override suspend fun activity(number: Long, next: String?): Page<IssueActivity> = when (next) {
+                null -> Page(listOf(label, comment), "next")
+                "next" -> Page(listOf(comment, pr), null)
+                else -> error("Unexpected cursor $next")
+            }
+        })
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+        assertEquals(Page(listOf(label, comment), "next"), model.state.value.activity)
+
+        model.moreActivity()
+        await { !model.state.value.detailLoading }
+        assertEquals(Page(listOf(label, comment, pr), null), model.state.value.activity)
     }
 
     @Test
@@ -416,7 +466,7 @@ class IssuesTest {
             error("Unexpected search")
 
         override suspend fun issue(number: Long) = issue
-        override suspend fun comments(number: Long, next: String?) = Page<Comment>(emptyList(), null)
+        override suspend fun activity(number: Long, next: String?) = Page<IssueActivity>(emptyList(), null)
         override suspend fun create(title: String, body: String?): Issue = error("Unexpected create")
         override suspend fun updateIssue(number: Long, title: String, body: String): Issue = error("Unexpected edit")
         override suspend fun addComment(number: Long, body: String): Comment = error("Unexpected comment")

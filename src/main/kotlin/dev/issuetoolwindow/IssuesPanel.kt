@@ -1,5 +1,6 @@
 package dev.issuetoolwindow
 
+import com.intellij.icons.AllIcons
 import com.intellij.ide.BrowserUtil
 import com.intellij.ide.ui.LafManagerListener
 import com.intellij.openapi.Disposable
@@ -257,6 +258,14 @@ internal class IssueDetailsPanel(
         JBHtmlPaneConfiguration {
             customStyleSheetProvider { issueDetailsStyleSheet(JBColor.isBright()) }
             extensions(ExtendableHTMLViewFactory.Extensions.WORD_WRAP)
+            iconResolver { name ->
+                when (name) {
+                    "label-event" -> AllIcons.Nodes.Tag
+                    "link-event" -> AllIcons.Actions.OpenNewTab
+                    "pull-request-event" -> AllIcons.Vcs.Branch
+                    else -> null
+                }
+            }
         },
     ).apply {
         Disposer.register(parent, this)
@@ -268,7 +277,7 @@ internal class IssueDetailsPanel(
         }
     }
     private val issueScroll = JBScrollPane(issueText).apply { border = JBUI.Borders.empty() }
-    private val moreComments = button("action.more", model::moreComments)
+    private val moreActivity = button("action.more", model::moreActivity)
     private val toggleStatus = button("action.close", model::toggleStatus)
     private val edit = button("action.edit", model::startEdit)
     private val browser =
@@ -295,7 +304,7 @@ internal class IssueDetailsPanel(
 
     init {
         val commentHeading = labelFor("detail.addComment", comment).apply { font = font.deriveFont(Font.BOLD) }
-        val composer = stack(row(moreComments), row(commentHeading), JBScrollPane(comment), row(post)).apply {
+        val composer = stack(row(moreActivity), row(commentHeading), JBScrollPane(comment), row(post)).apply {
             border = JBUI.Borders.empty(0, 20)
         }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
@@ -377,8 +386,9 @@ internal class IssueDetailsPanel(
     private fun renderIssue(state: IssuesState, issue: Issue) {
         val content = IssueDetailsContent(
             issue,
-            state.comments.items,
-            showEmptyComments = state.comments.items.isEmpty() && !state.detailLoading && state.detailError == null,
+            state.activity.items,
+            showEmptyActivity = state.activity.items.isEmpty() && state.activity.next == null &&
+                !state.detailLoading && state.detailError == null,
         )
         if (renderedContent != content) {
             val sameIssue = renderedContent?.issue?.number == issue.number
@@ -392,8 +402,8 @@ internal class IssueDetailsPanel(
         }
         detailStatus.text = message("detail.loading")
         detailStatus.isVisible = state.detailLoading
-        moreComments.isVisible = state.comments.next != null
-        moreComments.isEnabled = !state.detailLoading && !state.writing
+        moreActivity.isVisible = state.activity.next != null
+        moreActivity.isEnabled = !state.detailLoading && !state.writing
         toggleStatus.text = message(if (issue.open) "action.close" else "action.reopen")
         toggleStatus.isEnabled = !state.writing && !state.needsSignIn
         edit.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn

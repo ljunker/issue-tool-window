@@ -1,8 +1,11 @@
 package dev.issuetoolwindow
 
 import com.intellij.openapi.util.text.StringUtil.escapeXmlEntities
+import com.intellij.ui.ColorUtil
 import com.intellij.util.ui.StyleSheetUtil
 import dev.issuetoolwindow.IssuesBundle.message
+import dev.issuetoolwindow.PullRequestActivity.Relation
+import java.awt.Color
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -12,8 +15,8 @@ import javax.swing.text.html.StyleSheet
 
 internal data class IssueDetailsContent(
     val issue: Issue,
-    val comments: List<Comment>,
-    val showEmptyComments: Boolean,
+    val activity: List<IssueActivity>,
+    val showEmptyActivity: Boolean,
 ) {
     fun toHtml(): String = buildString {
         val status = message(if (issue.open) "filter.open" else "filter.closed")
@@ -28,15 +31,57 @@ internal data class IssueDetailsContent(
         append("</p>")
 
         appendCard("issue-description", issue.author, issue.createdAt, issue.body)
-        if (comments.isNotEmpty() || showEmptyComments) {
-            append("<h2 class='issue-comments'>${escapeXmlEntities(message("detail.comments"))}</h2>")
+        if (activity.isNotEmpty() || showEmptyActivity) {
+            append("<h2 class='issue-activity'>${escapeXmlEntities(message("detail.activity"))}</h2>")
         }
-        if (showEmptyComments) {
-            append("<p class='issue-muted'>${escapeXmlEntities(message("detail.noComments"))}</p>")
+        if (showEmptyActivity) {
+            append("<p class='issue-muted'>${escapeXmlEntities(message("detail.noActivity"))}</p>")
         }
-        for (comment in comments) {
-            appendCard("issue-comment", comment.author, comment.createdAt, comment.body)
+        for (entry in activity) {
+            when (entry) {
+                is Comment -> appendCard("issue-comment", entry.author, entry.createdAt, entry.body)
+                is LabelActivity -> appendLabelEvent(entry)
+                is PullRequestActivity -> appendPullRequestEvent(entry)
+            }
         }
+    }
+
+    private fun StringBuilder.appendLabelEvent(entry: LabelActivity) {
+        appendEventHeader(entry, "label-event")
+        val action = message(if (entry.added) "activity.label.added" else "activity.label.removed")
+        append(" ${escapeXmlEntities(action)} <span class='issue-label'")
+        val hex = entry.color?.takeIf(labelColorPattern::matches)
+        if (hex != null) {
+            val textColor = if (ColorUtil.isDark(Color(hex.toInt(16)))) "#ffffff" else "#1f2328"
+            append(" style='background-color: #$hex; color: $textColor'")
+        }
+        append(">&nbsp;${escapeXmlEntities(entry.name)}&nbsp;</span>")
+        appendTimestamp(entry.createdAt)
+        append("</p></div>")
+    }
+
+    private fun StringBuilder.appendPullRequestEvent(entry: PullRequestActivity) {
+        appendEventHeader(entry, "link-event")
+        val action = when (entry.relation) {
+            Relation.REFERENCES -> message("activity.pr.referenced")
+            Relation.CLOSES -> message("activity.pr.closes")
+            Relation.LINKS -> message("activity.pr.linked")
+            Relation.UNLINKS -> message("activity.pr.unlinked")
+        }
+        append(" ${escapeXmlEntities(action)}")
+        appendTimestamp(entry.createdAt)
+        append("</p><p class='issue-event-target'><icon src='pull-request-event'>&nbsp; ")
+        val title = "${escapeXmlEntities(entry.title)} <span class='issue-number'>#${entry.number}</span>"
+        val uri = IssueMarkdown.browserUri(entry.url)
+        if (uri != null) append("<a href='${escapeXmlEntities(uri.toASCIIString())}'>$title</a>")
+        else append(title)
+        append("</p></div>")
+    }
+
+    private fun StringBuilder.appendEventHeader(entry: IssueActivity, icon: String) {
+        append("<div class='issue-event'><p class='issue-event-summary'>")
+        append("<span class='issue-event-icon'>&nbsp;<icon src='$icon'>&nbsp;</span> ")
+        append("<strong>${escapeXmlEntities(entry.author ?: message("detail.unknown"))}</strong>")
     }
 
     private fun StringBuilder.appendMetadata(heading: String, values: List<String>, valueClass: String) {
@@ -53,9 +98,7 @@ internal data class IssueDetailsContent(
     private fun StringBuilder.appendCard(cardClass: String, author: String?, createdAt: String?, body: String) {
         append("<div class='$cardClass'><p class='issue-card-header'>")
         append("<strong>${escapeXmlEntities(author ?: message("detail.unknown"))}</strong>")
-        formattedTimestamp(createdAt)?.let { time ->
-            append(" <span class='issue-time'>· ${escapeXmlEntities(time)}</span>")
-        }
+        appendTimestamp(createdAt)
         append("</p><div class='issue-markdown'>")
         if (body.isBlank() && cardClass == "issue-description") {
             append("<p class='issue-muted'>${escapeXmlEntities(message("detail.noDescription"))}</p>")
@@ -63,6 +106,12 @@ internal data class IssueDetailsContent(
             append(IssueMarkdown.render(body))
         }
         append("</div></div>")
+    }
+
+    private fun StringBuilder.appendTimestamp(createdAt: String?) {
+        formattedTimestamp(createdAt)?.let { time ->
+            append(" <span class='issue-time'>· ${escapeXmlEntities(time)}</span>")
+        }
     }
 
     private fun formattedTimestamp(value: String?): String? {
@@ -74,6 +123,10 @@ internal data class IssueDetailsContent(
         }
         return DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT)
             .withZone(ZoneId.systemDefault()).format(instant)
+    }
+
+    private companion object {
+        val labelColorPattern = Regex("[0-9a-fA-F]{6}")
     }
 }
 
@@ -116,7 +169,13 @@ internal fun issueDetailsStyleSheet(light: Boolean): StyleSheet {
         div.issue-markdown li { margin: 2px 0; }
         div.issue-markdown pre { color: $foreground; background-color: $surface; border-radius: 6px; padding: 10px; }
         div.issue-markdown a { color: $link; }
-        h2.issue-comments { color: $foreground; font-size: 120%; margin: 16px 0 8px 0; }
+        h2.issue-activity { color: $foreground; font-size: 120%; margin: 16px 0 8px 0; }
+        div.issue-event { border-left: 2px solid $border; margin: 0 0 0 12px; padding: 4px 0 6px 12px; }
+        p.issue-event-summary { color: $muted; margin: 0; }
+        p.issue-event-summary strong { color: $foreground; }
+        span.issue-event-icon { background-color: $surface; border-radius: 10px; }
+        p.issue-event-target { margin: 0 0 0 26px; }
+        p.issue-event-target a { color: $link; }
         """.trimIndent(),
     )
 }

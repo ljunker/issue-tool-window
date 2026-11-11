@@ -10,6 +10,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 class IssueMarkdownTest {
     @Test
@@ -31,10 +32,10 @@ class IssueMarkdownTest {
             """.trimIndent(), emptyList(), emptyList(),
         )
         val comments = listOf(
-            Comment(1, "reviewer", "**Reviewed** with `foo`", "2026-11-11T09:00:00Z"),
-            Comment(2, "maintainer", "Follow-up", null),
+            Comment("1", "reviewer", "**Reviewed** with `foo`", "2026-11-11T09:00:00Z"),
+            Comment("2", "maintainer", "Follow-up", null),
         )
-        val html = IssueDetailsContent(issue, comments, showEmptyComments = false).toHtml()
+        val html = IssueDetailsContent(issue, comments, showEmptyActivity = false).toHtml()
 
         assertContains(html, "<h1 class='issue-title'>Preview &lt;draft&gt; <span class='issue-number'>#4</span></h1>")
         assertContains(html, "<div class='issue-description'><p class='issue-card-header'><strong>owner</strong></p>")
@@ -66,15 +67,40 @@ class IssueMarkdownTest {
     @Test
     fun `closed issue shows escaped metadata and an empty description without an invalid date`() {
         val issue = Issue(7, "Empty", false, null, " ", listOf("bug <ui>"), listOf("reviewer"), "invalid")
-        val html = IssueDetailsContent(issue, emptyList(), showEmptyComments = true).toHtml()
+        val html = IssueDetailsContent(issue, emptyList(), showEmptyActivity = true).toHtml()
 
         assertContains(html, "class='issue-closed'")
         assertContains(html, "class='issue-label'>&nbsp;bug &lt;ui&gt;&nbsp;")
         assertContains(html, "class='issue-assignee'>&nbsp;reviewer&nbsp;")
         assertContains(html, "<strong>Unknown</strong></p>")
         assertContains(html, "No description.")
-        assertContains(html, "No comments.")
+        assertContains(html, "No activity yet.")
         assertFalse(html.contains("issue-time"))
+    }
+
+    @Test
+    fun `activity shows safe colored labels and clickable closing pull requests between comments`() {
+        val issue = Issue(4, "Issue", true, null, "Description", emptyList(), emptyList())
+        val activity = listOf(
+            LabelActivity("label", "alice", null, "bug <ui>", "a2eeef", true),
+            Comment("comment", "bob", "A comment", null),
+            PullRequestActivity("pr", "alice", null, 14, "Fix <ui>", "https://github.com/owner/project/pull/14",
+                PullRequestActivity.Relation.CLOSES),
+            LabelActivity("bad-color", null, null, "bug", "red; background: url(example.png)", false),
+            PullRequestActivity("bad-url", null, null, 15, "Related change", "javascript:alert(1)",
+                PullRequestActivity.Relation.REFERENCES),
+        )
+        val html = IssueDetailsContent(issue, activity, showEmptyActivity = false).toHtml()
+
+        assertContains(html, "background-color: #a2eeef; color: #1f2328")
+        assertContains(html, "bug &lt;ui&gt;")
+        assertContains(html, "linked a pull request that will close this issue")
+        assertContains(html, "<a href='https://github.com/owner/project/pull/14'>Fix &lt;ui&gt; <span class='issue-number'>#14</span></a>")
+        assertContains(html, "Related change <span class='issue-number'>#15</span>")
+        assertFalse(html.contains("javascript:"))
+        assertFalse(html.contains("example.png"))
+        assertTrue(html.indexOf("bug &lt;ui&gt;") < html.indexOf("A comment"))
+        assertTrue(html.indexOf("A comment") < html.indexOf("Fix &lt;ui&gt;"))
     }
 
     @Test
