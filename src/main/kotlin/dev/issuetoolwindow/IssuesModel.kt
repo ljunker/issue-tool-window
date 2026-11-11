@@ -262,6 +262,42 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         }
     }
 
+    /**
+     * Reloads the shown issue in the background, so changes made elsewhere appear without a loading indicator. Reloads
+     * at least as much activity as is shown; when all of it was loaded, new entries at the end appear as well. Skips
+     * while anything else is loading or written and keeps the shown state when the request fails.
+     */
+    fun pollDetail() {
+        val source = gateway ?: return
+        val number = current.selected ?: return
+        val state = current
+        if (state.issue == null || state.writing || state.detailLoading || state.detailError != null) return
+        if (detailJob?.isActive == true) return
+        val shown = state.activity.items.size
+        val complete = state.activity.next == null
+        detailJob = scope.launch {
+            try {
+                val issue = source.issue(number)
+                var page = source.activity(number, null)
+                val items = page.items.toMutableList()
+                while (page.next != null && (complete || items.size < shown)) {
+                    page = source.activity(number, page.next)
+                    items += page.items
+                }
+                ensureActive()
+                update {
+                    copy(
+                        issue = issue,
+                        issues = issues.copy(items = issues.items.map { if (it.number == number) issue else it }),
+                        activity = Page(items.distinctBy(IssueActivity::id), page.next),
+                    )
+                }
+            } catch (_: IssuesFailure) {
+                // The next poll or a manual refresh tries again; a background failure must not hide the shown issue.
+            }
+        }
+    }
+
     fun startCreate() {
         openEditor(IssueEditor(IssueDraft()))
     }

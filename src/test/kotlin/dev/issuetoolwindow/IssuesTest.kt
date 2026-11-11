@@ -3,6 +3,7 @@ package dev.issuetoolwindow
 import com.intellij.util.ThrowableConvertor
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -458,6 +459,77 @@ class IssuesTest {
         model.moreActivity()
         await { !model.state.value.detailLoading }
         assertEquals(Page(listOf(label, comment, pr), null), model.state.value.activity)
+    }
+
+    @Test
+    fun `polling shows comments and changes made elsewhere without a loading indicator`() = runBlocking {
+        val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
+        val first = Comment("first", "alice", "First", null)
+        val second = Comment("second", "bob", "Second", null)
+        val foreign = Comment("foreign", "carol", "From GitHub", null)
+        var comments = listOf(first, second)
+        var activityRequests = 0
+        val gateway = object : StubGateway(issue) {
+            override suspend fun activity(number: Long, next: String?): Page<IssueActivity> {
+                activityRequests++
+                return when (next) {
+                    null -> Page(comments.take(1), "next")
+                    "next" -> Page(comments.drop(1), null)
+                    else -> error("Unexpected cursor $next")
+                }
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+        model.moreActivity()
+        await { !model.state.value.detailLoading }
+        assertEquals(Page(listOf<IssueActivity>(first, second), null), model.state.value.activity)
+
+        gateway.issue = issue.copy(title = "Renamed elsewhere")
+        comments = listOf(first, second, foreign)
+        val states = mutableListOf<IssuesState>()
+        val watcher = launch { model.state.collect { states += it } }
+        yield()
+        model.pollDetail()
+        await { model.state.value.activity.items.size == 3 }
+        watcher.cancel()
+        assertEquals(Page(listOf<IssueActivity>(first, second, foreign), null), model.state.value.activity)
+        assertEquals("Renamed elsewhere", model.state.value.issue?.title)
+        assertEquals("Renamed elsewhere", model.state.value.issues.items.single().title)
+        assertTrue(states.none { it.detailLoading })
+
+        val requests = activityRequests
+        model.select(null)
+        model.pollDetail()
+        yield()
+        assertEquals(requests, activityRequests)
+    }
+
+    @Test
+    fun `a failed poll keeps the shown issue and does not report an error`() = runBlocking {
+        val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
+        val comment = Comment("comment", "alice", "Shown", null)
+        var fail = false
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(issue) {
+            override suspend fun issue(number: Long): Issue =
+                if (fail) throw IssuesFailure("Offline") else issue
+
+            override suspend fun activity(number: Long, next: String?) = Page<IssueActivity>(listOf(comment), null)
+        })
+        await { !model.state.value.listLoading }
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+
+        fail = true
+        model.pollDetail()
+        repeat(5) { yield() }
+        assertEquals(issue, model.state.value.issue)
+        assertEquals(Page(listOf<IssueActivity>(comment), null), model.state.value.activity)
+        assertNull(model.state.value.detailError)
     }
 
     @Test

@@ -21,6 +21,8 @@ Unterstützt wird IntelliJ IDEA **2026.3** (Build-Reihe `263.*`).
    zurückzukehren.
    Mit `#42` und Enter das Issue 42 direkt öffnen, auch wenn es geschlossen ist oder noch nicht in der Liste steht.
 6. Ein Issue in der linken Liste auswählen, um Details und Kommentare im Editor-Tab **GitHub Issue** zu öffnen.
+   Solange der Tab sichtbar ist, lädt er das Issue alle 30 Sekunden im Hintergrund nach. Auf GitHub ergänzte
+   Kommentare und Änderungen erscheinen so ohne erneutes Öffnen.
    **New Issue** öffnet dort das Formular für ein neues Issue. **Edit Issue** öffnet den Titel und den
    Markdown-Quelltext der Beschreibung zur Bearbeitung. **Edit Labels** zeigt alle Labels des Repositorys mit
    Filterfeld; **Save Labels** fügt nur die angehakten Labels hinzu und entfernt nur die abgewählten. **Edit Assignees**
