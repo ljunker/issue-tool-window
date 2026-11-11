@@ -17,7 +17,8 @@ GitHub-Konto, das in IDEA bereits für **Pull Requests** eingerichtet ist.
 
 ## Installation
 
-Unterstützt wird IntelliJ IDEA **2026.3** (Build-Reihe `263.*`).
+Unterstützt wird IntelliJ IDEA **2026.3 und neuer** (ab Build `263`). Geprüft wird jeweils gegen 2026.3 und die neueste
+veröffentlichte IDEA-Version.
 
 **Über den Marketplace:** In IDEA unter **Settings → Plugins → Marketplace** nach **Issue Tool Window** suchen und
 installieren.

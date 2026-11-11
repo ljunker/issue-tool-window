@@ -5,7 +5,7 @@ Hinweise zu Build, Abnahme und Release des Plugins. Zur Installation und Nutzung
 ## Voraussetzungen
 
 - JDK 25 als `JAVA_HOME`
-- Der Gradle-Wrapper lädt die passende IDEA-Version (2026.3, Build-Reihe `263.*`) automatisch. Mit
+- Der Gradle-Wrapper lädt die IDEA-Version, gegen die kompiliert wird (2026.3, Build-Reihe `263.*`), automatisch. Mit
   `-PideaLocalPath="/Pfad/zu/IntelliJ IDEA.app"` lässt sich stattdessen eine vorhandene Installation von IDEA 2026.3
   nutzen.
 
@@ -18,6 +18,14 @@ Hinweise zu Build, Abnahme und Release des Plugins. Zur Installation und Nutzung
 
 Lokal gebaute Plugin-ZIPs liegen unter `build/distributions/`. Bei Pull Requests führt GitHub Actions mit JDK 25
 `test`, `buildPlugin` und `verifyPlugin` aus.
+
+## Unterstützte IDEA-Versionen
+
+Das Plugin setzt `since-build` auf `263` und keine Obergrenze (`until-build`). Es lässt sich daher auch in IDEA-Versionen
+nach 2026.3 installieren. `verifyPlugin` prüft gegen die Build-IDE (2026.3 oder `ideaLocalPath`) und zusätzlich gegen
+den neuesten Release jeder IDEA-Hauptversion ab Build 263. Neue IDEA-Versionen werden so automatisch geprüft, sobald
+sie erscheinen. Die Liste der Releases kommt von JetBrains; dafür und für den Download der IDEs braucht der Task
+Netzzugang. Kompatibilitätsprobleme lassen den Build scheitern.
 
 ## Sandbox-Abnahme vor einem Release
 
