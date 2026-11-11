@@ -43,7 +43,7 @@ class IssuesTest {
         )
         val second = request.extractResult(
             response(
-                """[{"number":2,"title":"Issue","state":"open","user":{"login":"author"},"body":"Description","labels":[{"name":"bug"}],"assignees":[{"login":"developer"}]}]""",
+                """[{"number":2,"title":"Issue","state":"open","user":{"login":"author"},"body":"Description","labels":[{"name":"bug"}],"assignees":[{"login":"developer"}],"created_at":"2026-11-11T09:00:00Z"}]""",
                 "page3",
             )
         )
@@ -55,7 +55,7 @@ class IssuesTest {
         }
         assertEquals(listOf("page1", "page2"), calls)
         assertEquals(
-            listOf(Issue(2, "Issue", true, "author", "Description", listOf("bug"), listOf("developer"))),
+            listOf(Issue(2, "Issue", true, "author", "Description", listOf("bug"), listOf("developer"), "2026-11-11T09:00:00Z")),
             page.items
         )
         assertEquals("page3", page.next)

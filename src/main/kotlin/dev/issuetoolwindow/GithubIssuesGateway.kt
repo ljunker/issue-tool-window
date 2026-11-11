@@ -143,9 +143,11 @@ internal data class RestIssue(
     val labels: List<RestLabel> = emptyList(),
     val assignees: List<RestUser> = emptyList(),
     val pullRequest: Map<String, Any?>? = null,
+    val createdAt: String? = null,
 ) {
     fun toIssue(): Issue = Issue(
         number, title, state == "open", user?.login, body.orEmpty(), labels.map { it.name }, assignees.map { it.login },
+        createdAt,
     )
 }
 

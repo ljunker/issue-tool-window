@@ -1,17 +1,23 @@
 package dev.issuetoolwindow
 
 import com.intellij.ide.BrowserUtil
+import com.intellij.ide.ui.LafManagerListener
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.DocumentAdapter
+import com.intellij.ui.JBColor
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBHtmlPane
+import com.intellij.ui.components.JBHtmlPaneConfiguration
+import com.intellij.ui.components.JBHtmlPaneStyleConfiguration
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
+import com.intellij.util.ui.ExtendableHTMLViewFactory
 import com.intellij.util.ui.JBUI
 import dev.issuetoolwindow.IssuesBundle.message
 import org.jetbrains.plugins.github.authentication.accounts.GithubAccount
@@ -19,6 +25,8 @@ import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Component
 import java.awt.FlowLayout
+import java.awt.Font
+import java.awt.Point
 import java.awt.event.ActionEvent
 import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
@@ -244,7 +252,13 @@ internal class IssueDetailsPanel(
     private val details = JPanel(detailCards)
     private val detailPlaceholder = JBLabel()
     private val detailStatus = JBLabel()
-    private val issueText = JBHtmlPane().apply {
+    private val issueText = JBHtmlPane(
+        JBHtmlPaneStyleConfiguration(),
+        JBHtmlPaneConfiguration {
+            customStyleSheetProvider { issueDetailsStyleSheet(JBColor.isBright()) }
+            extensions(ExtendableHTMLViewFactory.Extensions.WORD_WRAP)
+        },
+    ).apply {
         Disposer.register(parent, this)
         accessibleContext.accessibleName = message("detail.tab")
         addHyperlinkListener { event ->
@@ -253,6 +267,7 @@ internal class IssueDetailsPanel(
             }
         }
     }
+    private val issueScroll = JBScrollPane(issueText).apply { border = JBUI.Borders.empty() }
     private val moreComments = button("action.more", model::moreComments)
     private val toggleStatus = button("action.close", model::toggleStatus)
     private val edit = button("action.edit", model::startEdit)
@@ -279,10 +294,14 @@ internal class IssueDetailsPanel(
     private var wasEditing = false
 
     init {
+        val commentHeading = labelFor("detail.addComment", comment).apply { font = font.deriveFont(Font.BOLD) }
+        val composer = stack(row(moreComments), row(commentHeading), JBScrollPane(comment), row(post)).apply {
+            border = JBUI.Borders.empty(0, 20)
+        }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
             add(stack(row(toggleStatus, edit, browser), detailStatus), BorderLayout.NORTH)
-            add(JBScrollPane(issueText), BorderLayout.CENTER)
-            add(stack(row(moreComments), JBScrollPane(comment), row(post)), BorderLayout.SOUTH)
+            add(issueScroll, BorderLayout.CENTER)
+            add(composer, BorderLayout.SOUTH)
         }
         val form = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
             add(
@@ -298,6 +317,10 @@ internal class IssueDetailsPanel(
         panel.add(details, BorderLayout.CENTER)
         panel.add(feedbackScroll, BorderLayout.SOUTH)
 
+        ApplicationManager.getApplication().messageBus.connect(parent).subscribe(
+            LafManagerListener.TOPIC,
+            LafManagerListener { issueText.reloadCssStylesheets() },
+        )
         comment.onEdit { if (!updating) model.editComment(comment.text) }
         title.onEdit { if (!updating) updateDraft() }
         description.onEdit { if (!updating) updateDraft() }
@@ -358,9 +381,13 @@ internal class IssueDetailsPanel(
             showEmptyComments = state.comments.items.isEmpty() && !state.detailLoading && state.detailError == null,
         )
         if (renderedContent != content) {
-            val position = issueText.caretPosition.takeIf { renderedContent?.issue?.number == issue.number } ?: 0
+            val sameIssue = renderedContent?.issue?.number == issue.number
+            val position = if (sameIssue) issueText.caretPosition else 0
+            val viewport = issueScroll.viewport
+            val scrollPosition = if (sameIssue) viewport.viewPosition else Point()
             issueText.text = content.toHtml()
             issueText.caretPosition = position.coerceAtMost(issueText.document.length)
+            viewport.viewPosition = scrollPosition
             renderedContent = content
         }
         detailStatus.text = message("detail.loading")

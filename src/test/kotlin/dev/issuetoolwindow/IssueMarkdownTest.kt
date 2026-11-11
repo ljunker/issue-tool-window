@@ -1,8 +1,10 @@
 package dev.issuetoolwindow
 
+import java.awt.Color
 import java.net.URI
 import javax.swing.JEditorPane
 import javax.swing.SwingUtilities
+import javax.swing.text.StyleConstants
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -28,17 +30,22 @@ class IssueMarkdownTest {
                 ```
             """.trimIndent(), emptyList(), emptyList(),
         )
-        val comment = Comment(1, "reviewer", "**Reviewed** with `foo`", null)
-        val html = IssueDetailsContent(issue, listOf(comment), showEmptyComments = false).toHtml()
+        val comments = listOf(
+            Comment(1, "reviewer", "**Reviewed** with `foo`", "2026-11-11T09:00:00Z"),
+            Comment(2, "maintainer", "Follow-up", null),
+        )
+        val html = IssueDetailsContent(issue, comments, showEmptyComments = false).toHtml()
 
-        assertContains(html, "Preview &lt;draft&gt;</h1>")
+        assertContains(html, "<h1 class='issue-title'>Preview &lt;draft&gt; <span class='issue-number'>#4</span></h1>")
+        assertContains(html, "<div class='issue-description'><p class='issue-card-header'><strong>owner</strong></p>")
+        assertContains(html, "<div class='issue-comment'><p class='issue-card-header'><strong>reviewer</strong> <span class='issue-time'>")
+        assertContains(html, "<div class='issue-comment'><p class='issue-card-header'><strong>maintainer</strong></p>")
         assertContains(html, "<h2>Steps</h2>")
         assertContains(html, "<ol>")
         assertContains(html, "<li>Run <code>foo &lt; bar</code></li>")
         assertContains(html, "<ul>")
         assertContains(html, "☑ Done")
         assertContains(html, "☐ Pending")
-        assertContains(html, "<h3>reviewer</h3>")
         assertContains(html, "<strong>Reviewed</strong> with <code>foo</code>")
 
         SwingUtilities.invokeAndWait {
@@ -49,7 +56,35 @@ class IssueMarkdownTest {
             check(offset >= 0) { displayed }
             pane.select(offset, offset + code.length)
             assertEquals(code, pane.selectedText)
+            val end = displayed.indexOf("Follow-up") + "Follow-up".length
+            pane.select(offset, end)
+            assertContains(pane.selectedText, "Reviewed with foo")
+            assertContains(pane.selectedText, "Follow-up")
         }
+    }
+
+    @Test
+    fun `closed issue shows escaped metadata and an empty description without an invalid date`() {
+        val issue = Issue(7, "Empty", false, null, " ", listOf("bug <ui>"), listOf("reviewer"), "invalid")
+        val html = IssueDetailsContent(issue, emptyList(), showEmptyComments = true).toHtml()
+
+        assertContains(html, "class='issue-closed'")
+        assertContains(html, "class='issue-label'>&nbsp;bug &lt;ui&gt;&nbsp;")
+        assertContains(html, "class='issue-assignee'>&nbsp;reviewer&nbsp;")
+        assertContains(html, "<strong>Unknown</strong></p>")
+        assertContains(html, "No description.")
+        assertContains(html, "No comments.")
+        assertFalse(html.contains("issue-time"))
+    }
+
+    @Test
+    fun `description and status styles use separate palettes for light and dark themes`() {
+        val light = issueDetailsStyleSheet(light = true)
+        val dark = issueDetailsStyleSheet(light = false)
+        val description = "div.issue-description p.issue-card-header"
+        assertEquals(Color(0xddf4ff), StyleConstants.getBackground(light.getRule(description)))
+        assertEquals(Color(0x12283e), StyleConstants.getBackground(dark.getRule(description)))
+        assertEquals(Color.WHITE, StyleConstants.getForeground(dark.getRule("span.issue-closed")))
     }
 
     @Test

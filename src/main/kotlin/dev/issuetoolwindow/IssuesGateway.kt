@@ -38,6 +38,7 @@ internal data class Issue(
     val body: String,
     val labels: List<String>,
     val assignees: List<String>,
+    val createdAt: String? = null,
 )
 
 internal data class Comment(val id: Long, val author: String?, val body: String, val createdAt: String?)
