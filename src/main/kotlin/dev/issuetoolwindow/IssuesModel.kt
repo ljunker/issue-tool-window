@@ -14,6 +14,10 @@ internal data class IssueEditor(val draft: IssueDraft, val issueNumber: Long? = 
 
 internal enum class PickerKind { LABELS, ASSIGNEES }
 
+internal fun statusFeedback(issue: Issue): String =
+    if (issue.open) message("feedback.reopened", issue.number)
+    else message("feedback.closed.${issue.stateSuffix}", issue.number)
+
 /** Checkbox selection of labels or assignees for one issue. */
 internal data class SelectionPicker(
     val kind: PickerKind,
@@ -391,16 +395,25 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         }
     }
 
-    fun toggleStatus() {
-        val issue = current.issue ?: return
-        write({ setOpen(issue.number, !issue.open) }) { changed ->
+    fun close(reason: CloseReason) {
+        val issue = current.issue?.takeIf { it.open } ?: return
+        changeStatus { close(issue.number, reason) }
+    }
+
+    fun reopen() {
+        val issue = current.issue?.takeIf { !it.open } ?: return
+        changeStatus { reopen(issue.number) }
+    }
+
+    private fun changeStatus(change: suspend IssuesGateway.() -> Issue) {
+        write(change) { changed ->
             update {
                 val items =
                     issues.items.map { if (it.number == changed.number) changed else it }.filter(::shows)
                 copy(
                     issue = changed,
                     issues = issues.copy(items = items),
-                    feedback = message(if (changed.open) "feedback.reopened" else "feedback.closed", changed.number),
+                    feedback = statusFeedback(changed),
                 )
             }
         }

@@ -87,7 +87,7 @@ internal class IssueListCellRenderer : ListCellRenderer<Issue> {
         }
         tags.isVisible = issue.labels.isNotEmpty()
 
-        state.text = message(if (issue.open) "state.open" else "state.closed")
+        state.text = message("state.${issue.stateSuffix}")
         state.foreground = secondary
         state.fill = STATE_BACKGROUND
 

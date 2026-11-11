@@ -609,14 +609,21 @@ class IssuesTest {
     @Test
     fun `create returns to Open and close and reopen update the current issue`() = runBlocking {
         val initial = Issue(8, "Existing issue", false, null, "", emptyList(), emptyList())
+        val reasons = mutableListOf<CloseReason>()
         val gateway = object : StubGateway(initial) {
             override suspend fun create(title: String, body: String?): Issue {
                 issue = Issue(9, title, true, "author", body.orEmpty(), emptyList(), emptyList())
                 return issue
             }
 
-            override suspend fun setOpen(number: Long, open: Boolean): Issue {
-                issue = issue.copy(open = open)
+            override suspend fun close(number: Long, reason: CloseReason): Issue {
+                reasons += reason
+                issue = issue.copy(open = false, closeReason = reason)
+                return issue
+            }
+
+            override suspend fun reopen(number: Long): Issue {
+                issue = issue.copy(open = true, closeReason = null)
                 return issue
             }
         }
@@ -631,14 +638,68 @@ class IssuesTest {
         assertEquals(listOf(gateway.issue), model.state.value.issues.items)
         assertEquals(9L, model.state.value.selected)
 
-        model.toggleStatus()
+        model.reopen()
+        assertFalse(model.state.value.writing)
+        model.close(CloseReason.NOT_PLANNED)
         await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
         assertFalse(model.state.value.issue!!.open)
+        assertEquals(CloseReason.NOT_PLANNED, model.state.value.issue!!.closeReason)
+        assertEquals("Closed issue #9 as not planned.", model.state.value.feedback)
         assertTrue(model.state.value.issues.items.isEmpty())
-        model.toggleStatus()
+        model.close(CloseReason.COMPLETED)
+        assertFalse(model.state.value.writing)
+        model.reopen()
         await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
         assertTrue(model.state.value.issue!!.open)
+        assertNull(model.state.value.issue!!.closeReason)
+        assertEquals("Reopened issue #9.", model.state.value.feedback)
         assertEquals(listOf(gateway.issue), model.state.value.issues.items)
+        model.close(CloseReason.COMPLETED)
+        await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
+        assertEquals("Closed issue #9 as completed.", model.state.value.feedback)
+        assertEquals(listOf(CloseReason.NOT_PLANNED, CloseReason.COMPLETED), reasons)
+    }
+
+    @Test
+    fun `GitHub issue JSON maps the close reason of closed issues only`() {
+        val request = GithubApiRequest.Get.JsonPage("https://api.github.com/example", RestIssue::class.java)
+        val issues = request.extractResult(
+            response(
+                """[
+                {"number":1,"title":"Done","state":"closed","state_reason":"completed"},
+                {"number":2,"title":"Dropped","state":"closed","state_reason":"not_planned"},
+                {"number":3,"title":"Twin","state":"closed","state_reason":"duplicate"},
+                {"number":4,"title":"Old","state":"closed","state_reason":null},
+                {"number":5,"title":"Back","state":"open","state_reason":"reopened"}
+                ]"""
+            )
+        ).items.map(RestIssue::toIssue)
+        assertEquals(
+            listOf(CloseReason.COMPLETED, CloseReason.NOT_PLANNED, CloseReason.DUPLICATE, CloseReason.COMPLETED, null),
+            issues.map(Issue::closeReason),
+        )
+        assertEquals(
+            listOf("CLOSED", "NOT PLANNED", "DUPLICATE", "CLOSED", "OPEN"),
+            issues.map { IssuesBundle.message("state.${it.stateSuffix}") },
+        )
+    }
+
+    @Test
+    fun `issue details name the close reason in the state badge`() {
+        val issue = Issue(8, "Existing issue", true, null, "", emptyList(), emptyList())
+        fun badge(issue: Issue) = Regex("<p class='issue-state'><span class='([^']+)'>&nbsp;&nbsp;([^&]+)&nbsp;")
+            .find(IssueDetailsContent(issue, emptyList(), false).toHtml())!!.groupValues.drop(1)
+
+        assertEquals(listOf("issue-open", "Open"), badge(issue))
+        assertEquals(listOf("issue-closed", "Closed as completed"), badge(issue.copy(open = false, closeReason = CloseReason.COMPLETED)))
+        assertEquals(
+            listOf("issue-not-planned", "Closed as not planned"),
+            badge(issue.copy(open = false, closeReason = CloseReason.NOT_PLANNED)),
+        )
+        assertEquals(
+            listOf("issue-not-planned", "Closed as duplicate"),
+            badge(issue.copy(open = false, closeReason = CloseReason.DUPLICATE)),
+        )
     }
 
     @Test
@@ -1014,7 +1075,8 @@ class IssuesTest {
         override suspend fun create(title: String, body: String?): Issue = error("Unexpected create")
         override suspend fun updateIssue(number: Long, title: String, body: String): Issue = error("Unexpected edit")
         override suspend fun addComment(number: Long, body: String): Comment = error("Unexpected comment")
-        override suspend fun setOpen(number: Long, open: Boolean): Issue = error("Unexpected state change")
+        override suspend fun close(number: Long, reason: CloseReason): Issue = error("Unexpected close")
+        override suspend fun reopen(number: Long): Issue = error("Unexpected reopen")
         override suspend fun labels(): List<String> = error("Unexpected label list")
         override suspend fun changeLabels(number: Long, add: Collection<String>, remove: Collection<String>): Issue =
             error("Unexpected label change")

@@ -47,6 +47,18 @@ internal data class IssueCriteria(val label: String? = null, val assignee: Strin
             (assignee == null || issue.assignees.any { it.equals(assignee, ignoreCase = true) })
 }
 
+/** Why GitHub closed an issue; only [COMPLETED] and [NOT_PLANNED] can be chosen when closing. */
+internal enum class CloseReason(val apiValue: String, val messageSuffix: String) {
+    COMPLETED("completed", "completed"),
+    NOT_PLANNED("not_planned", "notPlanned"),
+    DUPLICATE("duplicate", "duplicate");
+
+    companion object {
+        /** Like GitHub, issues closed without a known reason count as completed. */
+        fun fromApi(value: String?): CloseReason = entries.firstOrNull { it.apiValue == value } ?: COMPLETED
+    }
+}
+
 internal data class Issue(
     val number: Long,
     val title: String,
@@ -59,7 +71,12 @@ internal data class Issue(
     val commentCount: Int = 0,
     /** Hex colors without `#` by label name, as far as GitHub reported them. */
     val labelColors: Map<String, String> = emptyMap(),
-)
+    /** Set for closed issues only. */
+    val closeReason: CloseReason? = if (open) null else CloseReason.COMPLETED,
+) {
+    /** Suffix of the bundle keys that describe the state: `open` or the [CloseReason.messageSuffix]. */
+    val stateSuffix: String get() = if (open) "open" else (closeReason ?: CloseReason.COMPLETED).messageSuffix
+}
 
 internal sealed interface IssueActivity {
     val id: String
@@ -111,7 +128,8 @@ internal interface IssuesGateway {
     suspend fun create(title: String, body: String?): Issue
     suspend fun updateIssue(number: Long, title: String, body: String): Issue
     suspend fun addComment(number: Long, body: String): Comment
-    suspend fun setOpen(number: Long, open: Boolean): Issue
+    suspend fun close(number: Long, reason: CloseReason): Issue
+    suspend fun reopen(number: Long): Issue
 
     /** All label names of the repository, across every result page. */
     suspend fun labels(): List<String>
