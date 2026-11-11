@@ -10,8 +10,9 @@ import org.jetbrains.plugins.github.exceptions.GithubRateLimitExceededException
 import org.jetbrains.plugins.github.exceptions.GithubStatusCodeException
 import java.io.IOException
 import java.net.URI
+import java.net.URLEncoder
 
-internal class GithubIssuesGateway(repository: Repository, account: GithubAccount) : IssuesGateway {
+internal class GithubIssuesGateway(private val repository: Repository, account: GithubAccount) : IssuesGateway {
     private val executor = GithubApiRequestExecutor.Factory.getInstance().create(account)
     private val issuesUrl = URI("https", "api.github.com", "/repos/${repository.fullName}/issues", null).toASCIIString()
 
@@ -21,8 +22,15 @@ internal class GithubIssuesGateway(repository: Repository, account: GithubAccoun
             Page(page.items, page.nextLink)
         }
 
+    override suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue> =
+        firstPageWithIssues(next ?: issueSearchUrl(repository, query, filter)) { url ->
+            val page = request(GithubApiRequest.Get.JsonSearchPage(pageUrl(url), RestIssue::class.java, ACCEPT))
+            Page(page.items, page.nextLink)
+        }
+
     override suspend fun issue(number: Long): Issue =
-        request(GithubApiRequest.Get.Json("$issuesUrl/$number", RestIssue::class.java, ACCEPT)).toIssue()
+        request(GithubApiRequest.Get.Optional.Json("$issuesUrl/$number", RestIssue::class.java, ACCEPT))
+            .toOpenedIssue(number)
 
     override suspend fun comments(number: Long, next: String?): Page<Comment> {
         val url = pageUrl(next ?: "$issuesUrl/$number/comments?per_page=30")
@@ -95,6 +103,22 @@ internal class GithubIssuesGateway(repository: Repository, account: GithubAccoun
     private companion object {
         const val ACCEPT = "application/vnd.github+json"
     }
+}
+
+internal fun issueSearchUrl(repository: Repository, query: String, filter: IssueFilter): String {
+    val terms = buildString {
+        append("repo:${repository.fullName} is:issue in:title,body")
+        if (filter != IssueFilter.ALL) append(" state:${filter.apiValue}")
+        // Keep user text inside the phrase so it cannot change the repository or status qualifiers.
+        append(" \"").append(query.replace('"', ' ').replace('\\', ' ')).append('"')
+    }
+    return "https://api.github.com/search/issues?q=${URLEncoder.encode(terms, Charsets.UTF_8)}&per_page=30"
+}
+
+internal fun RestIssue?.toOpenedIssue(number: Long): Issue {
+    if (this == null) throw IssuesFailure(message("error.issueNotFound", number.toString()))
+    if (pullRequest != null) throw IssuesFailure(message("error.pullRequest", number.toString()))
+    return toIssue()
 }
 
 internal suspend fun firstPageWithIssues(start: String, load: suspend (String) -> Page<RestIssue>): Page<Issue> {

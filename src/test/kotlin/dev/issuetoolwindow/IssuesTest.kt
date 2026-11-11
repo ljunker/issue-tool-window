@@ -12,6 +12,8 @@ import org.jetbrains.plugins.github.api.GithubApiResponse
 import java.io.IOException
 import java.io.InputStream
 import java.io.Reader
+import java.net.URI
+import java.net.URLDecoder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -60,18 +62,158 @@ class IssuesTest {
     }
 
     @Test
+    fun `GitHub search scopes the query and reads the next link from a search response`() {
+        val repo = Repository("owner", "project")
+        val url = issueSearchUrl(repo, "UI & café \"state:open", IssueFilter.CLOSED)
+        val uri = URI(url)
+        assertEquals("/search/issues", uri.path)
+        assertEquals(
+            "q=repo:owner/project is:issue in:title,body state:closed \"UI & café  state:open\"&per_page=30",
+            URLDecoder.decode(uri.rawQuery, Charsets.UTF_8),
+        )
+        assertFalse(URI(issueSearchUrl(repo, "text", IssueFilter.ALL)).query.contains("state:"))
+
+        val next = "$url&page=2"
+        val page = GithubApiRequest.Get.JsonSearchPage(url, RestIssue::class.java).extractResult(
+            response(
+                """{"total_count":2,"incomplete_results":false,"items":[{"number":42,"title":"Issue","state":"closed"}]}""",
+                next
+            )
+        )
+        assertEquals(listOf(42L), page.items.map(RestIssue::number))
+        assertEquals(next, page.nextLink)
+    }
+
+    @Test
+    fun `search paginates with the active status and clears back to the regular list`() = runBlocking {
+        val regular = Issue(1, "Regular", false, null, "", emptyList(), emptyList())
+        val first = regular.copy(number = 2, title = "First match", open = true)
+        val second = first.copy(number = 3, title = "Second match")
+        val calls = mutableListOf<Triple<String, IssueFilter, String?>>()
+        val gateway = object : StubGateway(regular) {
+            override suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue> {
+                calls += Triple(query, filter, next)
+                if (query == "failed") throw IssuesFailure("Search failed")
+                if (filter == IssueFilter.CLOSED) return Page(emptyList(), null)
+                return if (next == null) Page(listOf(first), "page2") else Page(listOf(second), null)
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        model.editSearch("  match  ")
+        model.search()
+        await { !model.state.value.listLoading }
+        assertEquals(Page(listOf(first), "page2"), model.state.value.issues)
+        model.moreIssues()
+        await { !model.state.value.listLoading }
+        assertEquals(Page(listOf(first, second), null), model.state.value.issues)
+
+        model.filter(IssueFilter.CLOSED)
+        await { !model.state.value.listLoading }
+        assertTrue(model.state.value.issues.items.isEmpty())
+        assertNull(model.state.value.listError)
+        assertEquals(
+            listOf(
+                Triple("match", IssueFilter.OPEN, null),
+                Triple("match", IssueFilter.OPEN, "page2"),
+                Triple("match", IssueFilter.CLOSED, null),
+            ), calls
+        )
+
+        model.editSearch("failed")
+        model.search()
+        await { !model.state.value.listLoading }
+        assertEquals("Search failed", model.state.value.listError?.message)
+        model.editSearch("")
+        await { !model.state.value.listLoading }
+        assertEquals(IssueFilter.CLOSED, model.state.value.filter)
+        assertEquals(Page(listOf(regular), null), model.state.value.issues)
+        assertNull(model.state.value.searchQuery)
+        assertNull(model.state.value.listError)
+    }
+
+    @Test
+    fun `a delayed previous search cannot overwrite the current results`() = runBlocking {
+        val old = Issue(1, "Old match", true, null, "", emptyList(), emptyList())
+        val current = old.copy(number = 2, title = "Current match")
+        val started = CompletableDeferred<Unit>()
+        val oldPage = CompletableDeferred<Page<Issue>>()
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(old) {
+            override suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue> =
+                if (query == "old") withContext(NonCancellable) {
+                    started.complete(Unit)
+                    withTimeout(3_000) { oldPage.await() }
+                } else Page(listOf(current), null)
+        })
+        model.editSearch("old")
+        model.search()
+        withTimeout(3_000) { started.await() }
+        model.editSearch("current")
+        model.search()
+        await { !model.state.value.listLoading }
+        oldPage.complete(Page(listOf(old), "stale"))
+        yield()
+        assertEquals(Page(listOf(current), null), model.state.value.issues)
+        assertNull(model.state.value.listError)
+    }
+
+    @Test
+    fun `direct lookup opens a closed issue and reports pull requests and missing issues`() = runBlocking {
+        val closed = RestIssue(42, "Closed issue", "closed")
+        val pullRequest = GithubApiRequest.Get.Optional.Json("https://api.github.com/example", RestIssue::class.java)
+            .extractResult(response("""{"number":43,"title":"PR","state":"open","pull_request":{}}"""))
+        val commentRequests = mutableListOf<Long>()
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(closed.toIssue()) {
+            override suspend fun issue(number: Long): Issue = when (number) {
+                42L -> closed
+                43L -> pullRequest
+                else -> null
+            }.toOpenedIssue(number)
+
+            override suspend fun comments(number: Long, next: String?): Page<Comment> {
+                commentRequests += number
+                return super.comments(number, next)
+            }
+        })
+        await { !model.state.value.listLoading }
+        assertTrue(model.state.value.issues.items.isEmpty())
+        model.editSearch(" #42 ")
+        model.search()
+        await { !model.state.value.detailLoading }
+        assertEquals(closed.toIssue(), model.state.value.issue)
+        assertEquals(IssueFilter.OPEN, model.state.value.filter)
+
+        model.editSearch("#43")
+        model.search()
+        await { !model.state.value.detailLoading }
+        assertNull(model.state.value.issue)
+        assertTrue(model.state.value.detailError?.message.orEmpty().contains("#43 is a pull request"))
+
+        model.editSearch("#44")
+        model.search()
+        await { !model.state.value.detailLoading }
+        assertNull(model.state.value.issue)
+        assertTrue(model.state.value.detailError?.message.orEmpty().contains("Issue #44 was not found"))
+        assertEquals(listOf(42L), commentRequests)
+    }
+
+    @Test
     fun `late replies from the previous repo cannot replace the current list or detail`() = runBlocking {
         val oldList = CompletableDeferred<Page<Issue>>()
         val oldDetail = CompletableDeferred<Issue>()
         val repoA = object : StubGateway(Issue(1, "Repo A", true, null, "", emptyList(), emptyList())) {
-            override suspend fun issues(filter: IssueFilter, next: String?): Page<Issue> =
-                withContext(NonCancellable) { oldList.await() }
+            override suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue> =
+                withContext(NonCancellable) { withTimeout(3_000) { oldList.await() } }
 
             override suspend fun issue(number: Long): Issue = withContext(NonCancellable) { oldDetail.await() }
         }
         val repoB = StubGateway(Issue(2, "Repo B", true, null, "", emptyList(), emptyList()))
         val model = IssuesModel(this)
         model.connect(repoA)
+        model.editSearch("Repo A")
+        model.search()
         model.select(1)
         yield()
         model.connect(repoB)
@@ -81,6 +223,8 @@ class IssuesTest {
         oldList.complete(Page(listOf(repoA.issue), null))
         oldDetail.complete(repoA.issue)
         yield()
+        assertEquals("", model.state.value.searchInput)
+        assertNull(model.state.value.searchQuery)
         assertEquals(listOf(repoB.issue), model.state.value.issues.items)
         assertEquals(repoB.issue, model.state.value.issue)
     }
@@ -268,6 +412,9 @@ class IssuesTest {
         override suspend fun issues(filter: IssueFilter, next: String?) =
             Page(listOf(issue).filter(filter::includes), null)
 
+        override suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue> =
+            error("Unexpected search")
+
         override suspend fun issue(number: Long) = issue
         override suspend fun comments(number: Long, next: String?) = Page<Comment>(emptyList(), null)
         override suspend fun create(title: String, body: String?): Issue = error("Unexpected create")
@@ -276,9 +423,9 @@ class IssuesTest {
         override suspend fun setOpen(number: Long, open: Boolean): Issue = error("Unexpected state change")
     }
 
-    private fun response(json: String, next: String): GithubApiResponse = object : GithubApiResponse {
+    private fun response(json: String, next: String? = null): GithubApiResponse = object : GithubApiResponse {
         override fun findHeader(headerName: String): String? =
-            if (headerName.equals("link", ignoreCase = true)) "<$next>; rel=\"next\"" else null
+            next?.takeIf { headerName.equals("link", ignoreCase = true) }?.let { "<$it>; rel=\"next\"" }
 
         override fun <T> readBody(converter: ThrowableConvertor<Reader, T, IOException>): T =
             json.reader().use { converter.convert(it) }

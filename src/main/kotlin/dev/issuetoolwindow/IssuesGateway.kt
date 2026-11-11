@@ -46,6 +46,7 @@ internal data class Page<T>(val items: List<T>, val next: String?)
 
 internal interface IssuesGateway {
     suspend fun issues(filter: IssueFilter, next: String?): Page<Issue>
+    suspend fun search(query: String, filter: IssueFilter, next: String?): Page<Issue>
     suspend fun issue(number: Long): Issue
     suspend fun comments(number: Long, next: String?): Page<Comment>
     suspend fun create(title: String, body: String?): Issue

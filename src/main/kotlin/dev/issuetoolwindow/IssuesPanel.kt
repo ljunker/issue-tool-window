@@ -52,6 +52,11 @@ internal class IssuesPanel(
     private val filters = ComboBox(IssueFilter.entries.toTypedArray()).apply {
         renderer = renderer { value -> value?.let { message(it.messageKey) }.orEmpty() }
     }
+    private val searchInput = JBTextField().apply {
+        emptyText.text = message("search.prompt")
+        accessibleContext.accessibleName = message("search.prompt")
+    }
+    private val search = button("action.search", model::search)
     private val refresh = button("action.refresh", model::refresh)
     private val newIssue = button("action.new", model::startCreate)
     private val listStatus = JBLabel()
@@ -66,6 +71,7 @@ internal class IssuesPanel(
 
     private val detailCards = CardLayout()
     private val details = JPanel(detailCards)
+    private val detailPlaceholder = JBLabel()
     private val detailStatus = JBLabel()
     private val issueText = textArea(6).apply { isEditable = false }
     private val moreComments = button("action.more", model::moreComments)
@@ -99,8 +105,12 @@ internal class IssuesPanel(
             repositories, accounts,
             row(signInLink),
         )
+        val searchBar = JPanel(BorderLayout(JBUI.scale(4), 0)).apply {
+            add(searchInput, BorderLayout.CENTER)
+            add(search, BorderLayout.EAST)
+        }
         val list = JPanel(BorderLayout()).apply {
-            add(stack(row(filters, refresh), row(newIssue), listStatus), BorderLayout.NORTH)
+            add(stack(row(filters, refresh), searchBar, row(newIssue), listStatus), BorderLayout.NORTH)
             add(JBScrollPane(issueList), BorderLayout.CENTER)
             add(row(moreIssues), BorderLayout.SOUTH)
         }
@@ -117,7 +127,7 @@ internal class IssuesPanel(
             add(JBScrollPane(description), BorderLayout.CENTER)
             add(row(save, cancel), BorderLayout.SOUTH)
         }
-        details.add(JBLabel(message("detail.empty")), "empty")
+        details.add(detailPlaceholder, "empty")
         details.add(detail, "issue")
         details.add(form, "editor")
 
@@ -139,6 +149,8 @@ internal class IssuesPanel(
         repositories.addActionListener { if (!updating) (repositories.selectedItem as? Repository)?.let(chooseRepository) }
         accounts.addActionListener { if (!updating) (accounts.selectedItem as? GithubAccount)?.let(chooseAccount) }
         filters.addActionListener { if (!updating) (filters.selectedItem as? IssueFilter)?.let(model::filter) }
+        searchInput.addActionListener { model.search() }
+        searchInput.onEdit { if (!updating) model.editSearch(searchInput.text) }
         issueList.addListSelectionListener {
             if (!updating && !it.valueIsAdjusting) issueList.selectedValue?.let { issue -> model.select(issue.number) }
         }
@@ -188,6 +200,9 @@ internal class IssuesPanel(
             val canNavigate = !state.writing && editor == null
             filters.selectedItem = state.filter
             filters.isEnabled = canNavigate
+            searchInput.syncText(state.searchInput)
+            searchInput.isEnabled = canNavigate
+            search.isEnabled = canNavigate && state.searchInput.isNotBlank()
             issueList.isEnabled = canNavigate
             refresh.isEnabled = !state.writing
             newIssue.isEnabled = canNavigate && !state.needsSignIn
@@ -202,7 +217,8 @@ internal class IssuesPanel(
             issueList.selectedIndex = renderedIssues.indexOfFirst { it.number == state.selected }
             listStatus.text = when {
                 state.listLoading -> message("list.loading")
-                state.listError == null && renderedIssues.isEmpty() -> message("list.empty")
+                state.listError != null -> message("list.failed")
+                renderedIssues.isEmpty() -> message(if (state.searchQuery == null) "list.empty" else "list.noMatches")
                 else -> ""
             }
             listStatus.isVisible = listStatus.text.isNotEmpty()
@@ -228,7 +244,16 @@ internal class IssuesPanel(
                     detailCards.show(details, "issue")
                 }
 
-                else -> detailCards.show(details, "empty")
+                else -> {
+                    detailPlaceholder.text = message(
+                        when {
+                            state.detailLoading -> "detail.loading"
+                            state.detailError != null -> "detail.failed"
+                            else -> "detail.empty"
+                        }
+                    )
+                    detailCards.show(details, "empty")
+                }
             }
             wasEditing = editor != null
 
