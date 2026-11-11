@@ -44,6 +44,13 @@ internal data class SelectionPicker(
     val changed: Boolean get() = selected != original
 }
 
+/** Status, order and filters of the issue list that are kept per project; the search text is not part of them. */
+internal data class IssueListSettings(
+    val filter: IssueFilter = IssueFilter.OPEN,
+    val sort: IssueSort = IssueSort.NEWEST,
+    val criteria: IssueCriteria = IssueCriteria(),
+)
+
 internal data class IssuesState(
     val connected: Boolean = false,
     val filter: IssueFilter = IssueFilter.OPEN,
@@ -68,6 +75,8 @@ internal data class IssuesState(
     /** Login of the active GitHub account. */
     val viewer: String? = null,
 ) {
+    val settings: IssueListSettings get() = IssueListSettings(filter, sort, criteria)
+
     /** Whether [issue] belongs in the list with the active status, label and assignee filters. */
     fun shows(issue: Issue): Boolean = filter.includes(issue) && criteria.includes(issue)
 
@@ -98,8 +107,14 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private val commentDrafts = mutableMapOf<Long, String>()
     private var labelOptions: List<String>? = null
     private var assigneeOptions: List<String>? = null
+    /** Whether the label and assignee restored on [connect] still need to be checked against the repository. */
+    private var criteriaUnchecked = false
 
-    fun connect(gateway: IssuesGateway?, viewer: String? = null) {
+    /**
+     * Connects to [gateway] and shows its list with [settings]. A saved label or assignee that the repository no longer
+     * offers is dropped silently before the first page loads; when the options cannot be loaded, the values stay.
+     */
+    fun connect(gateway: IssuesGateway?, viewer: String? = null, settings: IssueListSettings = IssueListSettings()) {
         listJob?.cancel()
         detailJob?.cancel()
         writeJob?.cancel()
@@ -108,8 +123,32 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         labelOptions = null
         assigneeOptions = null
         this.gateway = gateway
-        mutableState.value = IssuesState(connected = gateway != null, viewer = viewer?.takeIf { gateway != null })
+        criteriaUnchecked = gateway != null && settings.criteria != IssueCriteria()
+        mutableState.value = if (gateway == null) IssuesState() else IssuesState(
+            connected = true,
+            filter = settings.filter,
+            sort = settings.sort,
+            criteria = settings.criteria,
+            viewer = viewer,
+        )
         if (gateway != null) loadList()
+    }
+
+    /** [criteria] without a label or assignee that the connected repository does not offer (any more). */
+    private suspend fun validCriteria(criteria: IssueCriteria): IssueCriteria {
+        suspend fun valid(value: String?, options: suspend () -> List<String>): String? {
+            if (value == null) return null
+            val offered = try {
+                options()
+            } catch (_: IssuesFailure) {
+                return value
+            }
+            return offered.firstOrNull { it.equals(value, ignoreCase = true) }
+        }
+        return IssueCriteria(
+            label = valid(criteria.label, ::labelFilterOptions),
+            assignee = valid(criteria.assignee, ::assigneeFilterOptions),
+        )
     }
 
     fun refresh() {
@@ -196,12 +235,18 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         val source = gateway ?: return
         val filter = current.filter
         val sort = current.sort
-        val criteria = current.criteria
+        var criteria = current.criteria
         val query = current.searchQuery
         listJob?.cancel()
         update { copy(listLoading = true, listError = null) }
         listJob = scope.launch {
             try {
+                if (criteriaUnchecked) {
+                    criteria = validCriteria(criteria)
+                    ensureActive()
+                    criteriaUnchecked = false
+                    update { copy(criteria = criteria) }
+                }
                 val page = if (query == null) source.issues(filter, sort, criteria, next)
                 else source.search(query, filter, sort, criteria, next)
                 ensureActive()

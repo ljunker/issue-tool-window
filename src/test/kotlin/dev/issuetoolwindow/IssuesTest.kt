@@ -196,6 +196,81 @@ class IssuesTest {
     }
 
     @Test
+    fun `saved list settings load the first page with their status, order and filters`() = runBlocking {
+        val issue = Issue(1, "Issue", false, null, "", listOf("Bug"), listOf("bob"))
+        val calls = mutableListOf<Triple<IssueFilter, IssueSort, IssueCriteria>>()
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(issue) {
+            override suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?): Page<Issue> {
+                calls += Triple(filter, sort, criteria)
+                return Page(listOf(issue), null)
+            }
+
+            override suspend fun labels() = listOf("Bug", "docs")
+            override suspend fun assignees() = listOf("bob")
+        }, viewer = "alice", settings = IssueListSettings(IssueFilter.CLOSED, IssueSort.OLDEST, IssueCriteria("bug", "BOB")))
+        await { !model.state.value.listLoading }
+        val restored = IssueListSettings(IssueFilter.CLOSED, IssueSort.OLDEST, IssueCriteria("Bug", "bob"))
+        assertEquals(listOf(Triple(restored.filter, restored.sort, restored.criteria)), calls)
+        assertEquals(restored, model.state.value.settings)
+        assertEquals("", model.state.value.searchInput)
+    }
+
+    @Test
+    fun `a saved label or assignee the repository no longer offers is dropped silently`() = runBlocking {
+        val issue = Issue(1, "Issue", true, null, "", emptyList(), emptyList())
+        val calls = mutableListOf<IssueCriteria>()
+        val gateway = object : StubGateway(issue) {
+            var failOptions = false
+
+            override suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?): Page<Issue> {
+                calls += criteria
+                return Page(emptyList(), null)
+            }
+
+            override suspend fun labels(): List<String> =
+                if (failOptions) throw IssuesFailure("offline") else listOf("docs")
+
+            override suspend fun assignees(): List<String> =
+                if (failOptions) throw IssuesFailure("offline") else listOf("carol")
+        }
+        val model = IssuesModel(this)
+
+        model.connect(gateway, viewer = "alice", settings = IssueListSettings(criteria = IssueCriteria("deleted", "gone")))
+        await { !model.state.value.listLoading }
+        assertEquals(IssueCriteria(), model.state.value.criteria)
+        assertNull(model.state.value.listError)
+
+        model.connect(gateway, viewer = "alice", settings = IssueListSettings(criteria = IssueCriteria("docs", "Alice")))
+        await { !model.state.value.listLoading }
+        assertEquals(IssueCriteria("docs", "alice"), model.state.value.criteria)
+
+        gateway.failOptions = true
+        model.connect(gateway, viewer = "alice", settings = IssueListSettings(criteria = IssueCriteria("bug", "bob")))
+        await { !model.state.value.listLoading }
+        assertEquals(IssueCriteria("bug", "bob"), model.state.value.criteria)
+        assertEquals(listOf(IssueCriteria(), IssueCriteria("docs", "alice"), IssueCriteria("bug", "bob")), calls)
+    }
+
+    @Test
+    fun `list settings are saved without defaults and read back with defaults for unknown values`() {
+        val store = mutableMapOf<String, String>()
+        val write: (String, String?) -> Unit = { key, value ->
+            if (value == null) store.remove(key) else store[key] = value
+        }
+        val settings = IssueListSettings(IssueFilter.ALL, IssueSort.MOST_COMMENTED, IssueCriteria("bug", "alice"))
+        writeListSettings(settings, write)
+        assertEquals(settings, readListSettings(store::get))
+
+        writeListSettings(IssueListSettings(), write)
+        assertTrue(store.isEmpty())
+        assertEquals(IssueListSettings(), readListSettings(store::get))
+
+        val unknown = mapOf("dev.issuetoolwindow.filter" to "SOMETIMES", "dev.issuetoolwindow.sort" to "RANDOM")
+        assertEquals(IssueListSettings(), readListSettings(unknown::get))
+    }
+
+    @Test
     fun `filter options come from the connected repository and offer the active account first`() = runBlocking {
         val issue = Issue(1, "Issue", true, null, "", emptyList(), emptyList())
         var labelLoads = 0

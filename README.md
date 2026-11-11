@@ -46,6 +46,9 @@ Bei Bedarf IDEA anschließend neu starten.
 - Über **Search** oder Enter in Titel und Beschreibung suchen. Status-, Label- und Zuständigkeitsfilter gelten
   weiter. **Load More** lädt weitere Treffer. Das Suchfeld leeren, um zur normalen Liste zurückzukehren.
 - `#42` und Enter öffnet Issue 42 direkt – auch wenn es geschlossen ist oder noch nicht in der Liste steht.
+- Repository, Konto, Status, Label, Assignee und Sortierung bleiben pro Projekt erhalten, auch nach einem Neustart.
+  Gibt es ein gespeichertes Label oder eine Person im Repository nicht mehr, entfällt dieser Filter. Der Suchtext wird
+  nicht gespeichert.
 
 ### Issues ansehen und bearbeiten
 
