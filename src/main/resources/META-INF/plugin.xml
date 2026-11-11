@@ -1,16 +1,28 @@
 <idea-plugin>
+  <id>dev.issuetoolwindow.github</id>
+  <name>Issue Tool Window</name>
+  <vendor url="https://github.com/ljunker/issue-tool-window">Kryptikk</vendor>
+  <description><![CDATA[
+    <p>Work with GitHub issues of the current project without leaving the IDE.</p>
+    <p>The <b>GitHub Issues</b> tool window lists the issues of the project's GitHub.com remotes and uses the GitHub
+    account already configured for the <b>Pull Requests</b> tool window.</p>
+    <ul>
+      <li>Filter by open, closed or all issues and search in title and description</li>
+      <li>Open an issue directly with <code>#42</code></li>
+      <li>Read issue details, Markdown descriptions, comments and activity in an editor tab</li>
+      <li>Create and edit issues, post comments, close and reopen issues</li>
+      <li>Add and remove labels, change assignees or assign yourself</li>
+    </ul>
+    <p>Source code and issue tracker:
+    <a href="https://github.com/ljunker/issue-tool-window">github.com/ljunker/issue-tool-window</a></p>
+  ]]></description>
   <depends>com.intellij.modules.platform</depends>
   <depends>Git4Idea</depends>
   <depends>org.jetbrains.plugins.github</depends>
-  <description>Browse, comment on, create, close, and reopen issues from the current project's GitHub repositories.
-  </description>
+  <resource-bundle>messages.IssuesBundle</resource-bundle>
   <extensions defaultExtensionNs="com.intellij">
     <fileEditorProvider implementation="dev.issuetoolwindow.IssueDetailsEditorProvider"/>
     <toolWindow anchor="left" factoryClass="dev.issuetoolwindow.IssuesToolWindowFactory" icon="/icons/issues.svg" id="GitHub Issues"
       secondary="true"/>
   </extensions>
-  <id>dev.issuetoolwindow.github</id>
-  <name>GitHub Issues</name>
-  <resource-bundle>messages.IssuesBundle</resource-bundle>
-  <vendor>Issue Tool Window</vendor>
 </idea-plugin>

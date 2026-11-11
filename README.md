@@ -1,4 +1,4 @@
-# GitHub Issues für IntelliJ IDEA
+# Issue Tool Window – GitHub Issues für IntelliJ IDEA
 
 Das Tool Window **GitHub Issues** zeigt Issues aus den GitHub.com-Remotes des geöffneten Projekts. Es verwendet das
 GitHub-Konto aus IDEA, das auch im Fenster **Pull Requests** zur Verfügung steht.
@@ -7,9 +7,10 @@ GitHub-Konto aus IDEA, das auch im Fenster **Pull Requests** zur Verfügung steh
 
 Unterstützt wird IntelliJ IDEA **2026.3** (Build-Reihe `263.*`).
 
-1. Unter [GitHub Releases](https://github.com/ljunker/issue-tool-window/releases) das gewünschte Beta-Prerelease öffnen.
-   Unter **Assets** `issue-tool-window-<Version>.zip` herunterladen und nicht entpacken.
-2. In IDEA unter **Settings → Plugins → ⚙ → Install Plugin from Disk…** die ZIP auswählen. Bei Bedarf IDEA neu starten.
+1. In IDEA unter **Settings → Plugins → Marketplace** nach **Issue Tool Window** suchen und installieren. Alternativ unter
+   [GitHub Releases](https://github.com/ljunker/issue-tool-window/releases) die ZIP aus den **Assets** herunterladen
+   und unter **Settings → Plugins → ⚙ → Install Plugin from Disk…** auswählen (nicht entpacken).
+2. Bei Bedarf IDEA neu starten.
 3. Ein Git-Projekt mit einem GitHub.com-Remote öffnen. Unter **View → Tool Windows → GitHub Issues** das Fenster öffnen.
 4. Bei mehreren Repositories oder Konten die passende Auswahl treffen. **Sign In to GitHub** öffnet bei Bedarf den
    Anmeldedialog von IDEA.
@@ -39,9 +40,9 @@ nutzen.
 ```
 
 Lokal gebaute Plugin-ZIPs liegen unter `build/distributions/`. Bei Pull Requests führt GitHub Actions mit JDK 25
-`test` und `buildPlugin` aus.
+`test`, `buildPlugin` und `verifyPlugin` aus.
 
-### Sandbox-Abnahme vor der ersten Beta
+### Sandbox-Abnahme vor einem Release
 
 1. Mit `runIde` ein privates GitHub-Testrepository mit aktivierten Issues öffnen. Im Pull-Request-Fenster mit dem
    GitHub-Konto von IDEA anmelden.
@@ -52,15 +53,38 @@ Lokal gebaute Plugin-ZIPs liegen unter `build/distributions/`. Bei Pull Requests
    einem anderen Konto erstellten Issues muss GitHub den Zugriff verweigern. Den unveränderten Status auf GitHub prüfen.
 5. Ein lokales Git-Projekt ohne GitHub-Remote öffnen. Das Tool Window muss melden, dass kein GitHub-Remote vorhanden ist.
 
-### Beta veröffentlichen
+### Release und Versionierung
 
-Nach bestandener Sandbox-Abnahme einen Beta-Tag auf dem geprüften Commit erstellen und pushen, zum Beispiel:
+Releases entstehen automatisch beim Push auf `main` (Workflow `.github/workflows/release.yml`). Die Version leitet
+`.github/scripts/next-version.sh` aus den [Conventional Commits](https://www.conventionalcommits.org/) seit dem
+letzten Tag `vX.Y.Z` ab:
 
-```sh
-git tag -a v0.1.0-beta.1 -m "Beta 0.1.0-beta.1"
-git push origin v0.1.0-beta.1
-```
+| Commits seit dem letzten Release                | Versionssprung |
+|-------------------------------------------------|----------------|
+| `BREAKING CHANGE:` im Body oder `typ!:`         | Major          |
+| `feat:`                                         | Minor          |
+| `fix:` oder `perf:`                             | Patch          |
+| nur andere Typen (`docs:`, `chore:`, `ci:`, …)  | kein Release   |
 
-Der Tag `vMAJOR.MINOR.PATCH-beta.NUMBER` bestimmt die Version des Plugins. GitHub Actions führt Tests, Build und
-`verifyPlugin` gegen die im Projekt konfigurierte IDEA-Version aus. Erst nach Erfolg erscheint das Prerelease mit
-der geprüften ZIP unter **Assets**.
+Bei einem Release testet, verifiziert und signiert der Workflow das Plugin, veröffentlicht es im JetBrains
+Marketplace und legt Tag und GitHub-Release mit ZIP und Release-Notes an. Die Änderungsliste erscheint auch als
+Change-Notes im Marketplace. Über **Actions → Release → Run workflow** lässt sich ein Release mit festem
+Versionssprung erzwingen.
+
+Benötigte Repository-Secrets:
+
+| Secret                   | Zweck                                                                    |
+|--------------------------|--------------------------------------------------------------------------|
+| `PUBLISH_TOKEN`          | Marketplace-Token ([Profil → Tokens](https://plugins.jetbrains.com/author/me/tokens)); ohne Token kein Marketplace-Upload |
+| `CERTIFICATE_CHAIN`      | Zertifikatskette (PEM) für die [Plugin-Signatur](https://plugins.jetbrains.com/docs/intellij/plugin-signing.html) |
+| `PRIVATE_KEY`            | Privater Schlüssel (PEM) zur Zertifikatskette                            |
+| `PRIVATE_KEY_PASSWORD`   | Passwort des privaten Schlüssels                                         |
+
+Ohne Signatur-Secrets wird das Plugin unsigniert veröffentlicht. Die **erste** Version muss einmalig manuell auf
+[plugins.jetbrains.com](https://plugins.jetbrains.com/plugin/add) hochgeladen werden; erst danach kann der Workflow
+neue Versionen per Token veröffentlichen. Dafür `PUBLISH_TOKEN` zunächst weglassen, die ZIP des ersten automatisch
+erstellten GitHub-Release manuell hochladen und das Secret erst danach anlegen.
+
+## Lizenz
+
+[GNU General Public License v3.0](LICENSE)
