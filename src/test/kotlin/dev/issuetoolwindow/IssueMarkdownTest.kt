@@ -147,22 +147,4 @@ class IssueMarkdownTest {
         assertNull(IssueMarkdown.browserUri("https://example.com/bad path"))
         assertNull(IssueMarkdown.browserUri("file:///tmp/notes"))
     }
-
-    @Test
-    fun `only pull request links of the connected repository resolve to a pull request number`() {
-        val repository = Repository("Owner", "Project")
-        fun number(link: String) = IssueMarkdown.pullRequestNumber(URI(link), repository)
-
-        assertEquals(14L, number("https://github.com/Owner/Project/pull/14"))
-        assertEquals(14L, number("https://GitHub.com/owner/project/pull/14/files#diff-1"))
-        assertEquals(14L, number("http://www.github.com/owner/project/pull/14#issuecomment-2"))
-        assertNull(number("https://github.com/owner/other/pull/14"))
-        assertNull(number("https://github.com/owner/project/issues/14"))
-        assertNull(number("https://github.com/owner/project/pulls"))
-        assertNull(number("https://github.com/owner/project/pull/new"))
-        assertNull(number("https://github.com/owner/project/pull/0"))
-        assertNull(number("https://github.com/owner/project/pull/+14"))
-        assertNull(number("https://example.com/owner/project/pull/14"))
-        assertNull(number("https://github.com.example.com/owner/project/pull/14"))
-    }
 }

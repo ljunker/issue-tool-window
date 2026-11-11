@@ -20,14 +20,12 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.beans.PropertyChangeListener
-import java.net.URI
 import javax.swing.JComponent
 import kotlin.time.Duration.Companion.seconds
 
 internal class IssueDetailsFile(
     val model: IssuesModel,
     val openOnGitHub: (Long) -> Unit,
-    val openLink: (URI) -> Unit,
     val createBranch: (Issue) -> Unit,
 ) : LightVirtualFile(message("detail.tab")), VirtualFileWithoutContent
 
@@ -45,7 +43,7 @@ class IssueDetailsEditorProvider : FileEditorProvider, DumbAware {
 @OptIn(ExperimentalCoroutinesApi::class)
 private class IssueDetailsEditor(private val issueFile: IssueDetailsFile) : UserDataHolderBase(), FileEditor {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
-    private val view = IssueDetailsPanel(issueFile.model, issueFile.openOnGitHub, issueFile.openLink, issueFile.createBranch, this)
+    private val view = IssueDetailsPanel(issueFile.model, issueFile.openOnGitHub, issueFile.createBranch, this)
 
     init {
         view.render(issueFile.model.state.value)
