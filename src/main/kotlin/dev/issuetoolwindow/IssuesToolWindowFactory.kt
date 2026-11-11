@@ -36,11 +36,14 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.jetbrains.plugins.github.api.GHRepositoryCoordinates
+import org.jetbrains.plugins.github.api.GHRepositoryPath
 import org.jetbrains.plugins.github.api.GithubApiRequestExecutor
 import org.jetbrains.plugins.github.api.GithubApiRequests
 import org.jetbrains.plugins.github.api.GithubServerPath
 import org.jetbrains.plugins.github.authentication.GHAccountsUtil
 import org.jetbrains.plugins.github.authentication.accounts.GithubAccount
+import org.jetbrains.plugins.github.pullrequest.ui.GHPRProjectViewModel
 import org.jetbrains.plugins.github.util.GHHostedRepositoriesManager
 import java.awt.CardLayout
 import java.net.URI
@@ -63,7 +66,7 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
     private val model = IssuesModel(scope)
     private val editorManager = FileEditorManager.getInstance(project)
     private val properties = PropertiesComponent.getInstance(project)
-    private val detailsFile = IssueDetailsFile(model, ::openOnGitHub, ::createBranch)
+    private val detailsFile = IssueDetailsFile(model, ::openOnGitHub, ::openLink, ::createBranch)
     private val selector = RepositorySelectorPanel(::chooseRepository, ::chooseAccount, ::viewIssues, ::signIn)
     private val list = IssuesPanel(model, scope, ::signIn, ::showDetails)
     private val cards = CardLayout()
@@ -266,6 +269,35 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
     private fun openOnGitHub(number: Long) {
         val repo = repository ?: return
         BrowserUtil.browse(URI("https", "github.com", "/${repo.fullName}/issues/$number", null).toASCIIString())
+    }
+
+    /** Opens pull requests of the connected repository in the Pull Requests tool window and other links in the browser. */
+    private fun openLink(uri: URI) {
+        val (repo, selected) = connectedTo ?: return BrowserUtil.browse(uri)
+        val number = IssueMarkdown.pullRequestNumber(uri, repo) ?: return BrowserUtil.browse(uri)
+        try {
+            openPullRequest(repo, selected, number)
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            BrowserUtil.browse(uri)
+        } catch (_: LinkageError) {
+            // A later GitHub plugin may change this API; the link then still works in the browser.
+            BrowserUtil.browse(uri)
+        }
+    }
+
+    /**
+     * Shows pull request [number] in the Pull Requests tool window, connected to [repo] with [account].
+     *
+     * The GitHub plugin offers no public API for this; the internal calls are listed in
+     * `verifier-allowed-internal-api.txt` so that any other internal API usage still fails `verifyPlugin`.
+     */
+    private fun openPullRequest(repo: Repository, account: GithubAccount, number: Long) {
+        val coordinates = GHRepositoryCoordinates(GithubServerPath.DEFAULT_SERVER, GHRepositoryPath(repo.owner, repo.name))
+        project.service<GHPRProjectViewModel>().activateAndAwaitProject(coordinates to account) {
+            openPullRequestInfoAndTimeline(number)
+        }
     }
 
     /** Creates a local branch for [issue] from the current HEAD and checks it out; never pushes. */

@@ -1,7 +1,6 @@
 package dev.issuetoolwindow
 
 import com.intellij.icons.AllIcons
-import com.intellij.ide.BrowserUtil
 import com.intellij.ide.ui.LafManagerListener
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
@@ -41,6 +40,7 @@ import java.awt.event.ActionEvent
 import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.net.URI
 import javax.swing.AbstractAction
 import javax.swing.BoxLayout
 import javax.swing.DefaultListModel
@@ -285,6 +285,7 @@ internal class IssuesPanel(
 internal class IssueDetailsPanel(
     private val model: IssuesModel,
     openOnGitHub: (Long) -> Unit,
+    openLink: (URI) -> Unit,
     createBranch: (Issue) -> Unit,
     parent: Disposable,
 ) {
@@ -311,7 +312,7 @@ internal class IssueDetailsPanel(
         accessibleContext.accessibleName = message("detail.tab")
         addHyperlinkListener { event ->
             if (event.eventType == HyperlinkEvent.EventType.ACTIVATED) {
-                event.description?.let(IssueMarkdown::browserUri)?.let(BrowserUtil::browse)
+                event.description?.let(IssueMarkdown::browserUri)?.let(openLink)
             }
         }
     }
