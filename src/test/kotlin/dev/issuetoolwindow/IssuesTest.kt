@@ -106,14 +106,14 @@ class IssuesTest {
 
         model.startCreate()
         val draft = IssueDraft("Draft title", "Draft description")
-        model.editIssue(draft)
-        model.create()
+        model.editDraft(draft)
+        model.saveEditor()
         await { !model.state.value.writing }
-        assertEquals(draft, model.state.value.newIssue)
+        assertEquals(draft, model.state.value.editor?.draft)
         assertEquals("Failed", model.state.value.writeError?.message)
         assertEquals(1, creates)
 
-        model.cancelCreate()
+        model.cancelEditor()
         model.select(gateway.issue.number)
         model.editComment("Draft comment")
         model.comment()
@@ -141,8 +141,8 @@ class IssuesTest {
         model.connect(gateway)
         model.filter(IssueFilter.CLOSED)
         model.startCreate()
-        model.editIssue(IssueDraft("New issue", "Description"))
-        model.create()
+        model.editDraft(IssueDraft("New issue", "Description"))
+        model.saveEditor()
         await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
         assertEquals(IssueFilter.OPEN, model.state.value.filter)
         assertEquals(listOf(gateway.issue), model.state.value.issues.items)
@@ -158,6 +158,108 @@ class IssuesTest {
         assertEquals(listOf(gateway.issue), model.state.value.issues.items)
     }
 
+    @Test
+    fun `editing prefills markdown and rejects a blank title without saving`() = runBlocking {
+        val issue = Issue(8, "Existing issue", true, null, "## Heading\n\n- [ ] Task", emptyList(), emptyList())
+        val model = IssuesModel(this)
+        model.connect(StubGateway(issue))
+        await { !model.state.value.listLoading }
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+
+        model.startEdit()
+        assertEquals(IssueDraft(issue.title, issue.body), model.state.value.editor?.draft)
+        model.editDraft(IssueDraft("   ", "Unsaved description"))
+        model.saveEditor()
+        assertFalse(model.state.value.writing)
+        model.cancelEditor()
+        assertNull(model.state.value.editor)
+        assertEquals(issue, model.state.value.issue)
+        assertEquals(listOf(issue), model.state.value.issues.items)
+    }
+
+    @Test
+    fun `failed edit keeps draft and retry can clear the description of an issue on a later page`() = runBlocking {
+        val initial = Issue(8, "Existing issue", true, null, "Description", listOf("bug"), emptyList())
+        val firstIssue = initial.copy(number = 9, title = "Newer issue")
+        var attempts = 0
+        val gateway = object : StubGateway(initial) {
+            override suspend fun issues(filter: IssueFilter, next: String?): Page<Issue> =
+                if (next == null) Page(listOf(firstIssue), "page2") else Page(listOf(issue), "page3")
+
+            override suspend fun updateIssue(number: Long, title: String, body: String): Issue {
+                assertEquals(initial.number, number)
+                assertEquals("Updated title", title)
+                assertEquals("", body)
+                if (++attempts == 1) throw IssuesFailure("Could not complete the GitHub request.")
+                issue = issue.copy(title = title, body = body)
+                return issue
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.moreIssues()
+        await { !model.state.value.listLoading }
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+
+        val draft = IssueDraft("  Updated title  ", "")
+        model.startEdit()
+        model.editDraft(draft)
+        model.select(firstIssue.number)
+        model.saveEditor()
+        await { !model.state.value.writing }
+        assertEquals("Could not complete the GitHub request.", model.state.value.writeError?.message)
+        assertEquals(draft, model.state.value.editor?.draft)
+        assertEquals(initial, model.state.value.issue)
+
+        model.saveEditor()
+        model.saveEditor()
+        await { !model.state.value.writing }
+        assertEquals(2, attempts)
+        assertNull(model.state.value.editor)
+        assertNull(model.state.value.writeError)
+        assertEquals(gateway.issue, model.state.value.issue)
+        assertEquals(Page(listOf(firstIssue, gateway.issue), "page3"), model.state.value.issues)
+    }
+
+    @Test
+    fun `switching repositories discards edits and ignores an in-flight save response`() = runBlocking {
+        val initial = Issue(8, "Repo A", true, null, "Original description", emptyList(), emptyList())
+        val saved = CompletableDeferred<Issue>()
+        val saving = CompletableDeferred<Unit>()
+        val repoA = object : StubGateway(initial) {
+            override suspend fun updateIssue(number: Long, title: String, body: String): Issue =
+                withContext(NonCancellable) {
+                    saving.complete(Unit)
+                    withTimeout(3_000) { saved.await() }
+                }
+        }
+        val repoB = StubGateway(initial.copy(title = "Repo B"))
+        val model = IssuesModel(this)
+        model.connect(repoA)
+        await { !model.state.value.listLoading }
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+        model.startEdit()
+        model.editDraft(IssueDraft("Changed title", "Changed body"))
+        model.saveEditor()
+        withTimeout(3_000) { saving.await() }
+
+        model.connect(repoB)
+        await { !model.state.value.listLoading }
+        model.select(repoB.issue.number)
+        await { !model.state.value.detailLoading }
+        model.saveEditor()
+        saved.complete(initial.copy(title = "Changed title", body = "Changed body"))
+        yield()
+        assertNull(model.state.value.editor)
+        assertFalse(model.state.value.writing)
+        assertEquals(repoB.issue, model.state.value.issue)
+        assertEquals(listOf(repoB.issue), model.state.value.issues.items)
+    }
+
     private suspend fun await(condition: () -> Boolean) {
         withTimeout(3_000) { while (!condition()) yield() }
     }
@@ -169,6 +271,7 @@ class IssuesTest {
         override suspend fun issue(number: Long) = issue
         override suspend fun comments(number: Long, next: String?) = Page<Comment>(emptyList(), null)
         override suspend fun create(title: String, body: String?): Issue = error("Unexpected create")
+        override suspend fun updateIssue(number: Long, title: String, body: String): Issue = error("Unexpected edit")
         override suspend fun addComment(number: Long, body: String): Comment = error("Unexpected comment")
         override suspend fun setOpen(number: Long, open: Boolean): Issue = error("Unexpected state change")
     }

@@ -11,7 +11,8 @@ GitHub-Konto aus IDEA, das auch im Fenster **Pull Requests** zur Verfügung steh
 3. Bei mehreren Repositories oder Konten die passende Auswahl treffen. **Sign In to GitHub** öffnet bei Bedarf den
    Anmeldedialog von IDEA.
 4. Mit **Open**, **Closed** und **All** filtern. Ein Issue auswählen, um Details und Kommentare zu sehen. **New Issue**
-   legt ein Issue an. In den Details stehen **Post Comment**, **Close Issue** und **Reopen Issue** zur Verfügung.
+   legt ein Issue an. **Edit Issue** öffnet den Titel und den Markdown-Quelltext der Beschreibung zur Bearbeitung.
+   In den Details stehen auch **Post Comment**, **Close Issue** und **Reopen Issue** zur Verfügung.
 
 ## Build und Abnahme
 

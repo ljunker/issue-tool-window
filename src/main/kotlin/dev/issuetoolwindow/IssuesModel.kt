@@ -10,6 +10,8 @@ import kotlinx.coroutines.launch
 
 internal data class IssueDraft(val title: String = "", val body: String = "")
 
+internal data class IssueEditor(val draft: IssueDraft, val issueNumber: Long? = null)
+
 internal data class IssuesState(
     val connected: Boolean = false,
     val filter: IssueFilter = IssueFilter.OPEN,
@@ -24,7 +26,7 @@ internal data class IssuesState(
     val detailError: IssuesFailure? = null,
     val writeError: IssuesFailure? = null,
     val feedback: String? = null,
-    val newIssue: IssueDraft? = null,
+    val editor: IssueEditor? = null,
     val commentDraft: String = "",
 ) {
     val needsSignIn: Boolean
@@ -61,7 +63,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     }
 
     fun filter(filter: IssueFilter) {
-        if (current.writing || filter == current.filter) return
+        if (current.writing || current.editor != null || filter == current.filter) return
         update { copy(filter = filter, issues = Page(emptyList(), null), feedback = null) }
         select(null)
         loadList()
@@ -93,7 +95,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     }
 
     fun select(number: Long?) {
-        if (current.writing || current.selected == number) return
+        if (current.writing || current.editor != null || current.selected == number) return
         detailJob?.cancel()
         update {
             copy(
@@ -141,23 +143,38 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     }
 
     fun startCreate() {
-        if (gateway == null || current.writing || current.newIssue != null) return
-        update { copy(newIssue = IssueDraft(), writeError = null, feedback = null) }
+        openEditor(IssueEditor(IssueDraft()))
     }
 
-    fun editIssue(draft: IssueDraft) {
-        if (!current.writing && current.newIssue != null) update { copy(newIssue = draft) }
+    fun startEdit() {
+        val issue = current.issue ?: return
+        openEditor(IssueEditor(IssueDraft(issue.title, issue.body), issue.number))
     }
 
-    fun cancelCreate() {
-        if (!current.writing) update { copy(newIssue = null, writeError = null) }
+    private fun openEditor(editor: IssueEditor) {
+        if (gateway == null || current.writing || current.editor != null) return
+        update { copy(editor = editor, writeError = null, feedback = null) }
     }
 
-    fun create() {
-        val draft = current.newIssue ?: return
+    fun editDraft(draft: IssueDraft) {
+        val editor = current.editor ?: return
+        if (!current.writing) update { copy(editor = editor.copy(draft = draft)) }
+    }
+
+    fun cancelEditor() {
+        if (!current.writing) update { copy(editor = null, writeError = null) }
+    }
+
+    fun saveEditor() {
+        val (draft, number) = current.editor ?: return
         val title = draft.title.trim()
         if (title.isEmpty()) return
-        write({ create(title, draft.body.takeUnless(String::isBlank)) }) { created ->
+        if (number == null) createIssue(title, draft.body.takeUnless(String::isBlank))
+        else saveChanges(number, title, draft.body)
+    }
+
+    private fun createIssue(title: String, body: String?) {
+        write({ create(title, body) }) { created ->
             detailJob?.cancel()
             update {
                 copy(
@@ -167,9 +184,28 @@ internal class IssuesModel(private val scope: CoroutineScope) {
                     issue = created,
                     comments = Page(emptyList(), null),
                     detailError = null,
-                    newIssue = null,
+                    editor = null,
                     commentDraft = "",
                     feedback = message("feedback.created", created.number),
+                )
+            }
+        }
+    }
+
+    private fun saveChanges(number: Long, title: String, body: String) {
+        write({ updateIssue(number, title, body) }, refreshAfter = false) { changed ->
+            // A read started before this write can still contain the old title or description.
+            listJob?.cancel()
+            detailJob?.cancel()
+            update {
+                val items = issues.items.map { if (it.number == number) changed else it }.filter(filter::includes)
+                copy(
+                    issue = changed,
+                    issues = issues.copy(items = items),
+                    listLoading = false,
+                    detailLoading = false,
+                    editor = null,
+                    feedback = message("feedback.updated", number),
                 )
             }
         }
@@ -207,7 +243,11 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         }
     }
 
-    private fun <T> write(request: suspend IssuesGateway.() -> T, applied: (T) -> Unit) {
+    private fun <T> write(
+        request: suspend IssuesGateway.() -> T,
+        refreshAfter: Boolean = true,
+        applied: (T) -> Unit,
+    ) {
         val source = gateway ?: return
         if (current.writing) return
         update { copy(writing = true, writeError = null, feedback = null) }
@@ -217,8 +257,10 @@ internal class IssuesModel(private val scope: CoroutineScope) {
                 ensureActive()
                 applied(result)
                 update { copy(writing = false) }
-                loadList()
-                loadDetail()
+                if (refreshAfter) {
+                    loadList()
+                    loadDetail()
+                }
             } catch (error: IssuesFailure) {
                 ensureActive()
                 update { copy(writing = false, writeError = error) }
