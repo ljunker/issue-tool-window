@@ -109,7 +109,7 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
         val connection = if (repo != null && selected != null) repo to selected else null
         if (connectedTo != connection) {
             connectedTo = connection
-            model.connect(connection?.let { (repo, account) -> GithubIssuesGateway(repo, account) })
+            model.connect(connection?.let { (repo, account) -> GithubIssuesGateway(repo, account) }, selected?.name)
         }
         view.showContext(repositories, repo, accounts, selected)
     }

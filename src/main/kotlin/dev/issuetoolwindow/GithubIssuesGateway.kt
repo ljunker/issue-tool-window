@@ -17,6 +17,8 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
     private val issuesUrl = URI("https", "api.github.com", "/repos/${repository.fullName}/issues", null).toASCIIString()
     private val labelsUrl =
         URI("https", "api.github.com", "/repos/${repository.fullName}/labels", "per_page=100", null).toASCIIString()
+    private val assigneesUrl =
+        URI("https", "api.github.com", "/repos/${repository.fullName}/assignees", "per_page=100", null).toASCIIString()
 
     override suspend fun issues(filter: IssueFilter, next: String?): Page<Issue> =
         firstPageWithIssues(next ?: "$issuesUrl?state=${filter.apiValue}&per_page=30") { url ->
@@ -94,6 +96,43 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
         return issue(number)
     }
 
+    override suspend fun assignees(): List<String> =
+        allPages(assigneesUrl) { url ->
+            val page = request(GithubApiRequest.Get.JsonPage<RestUser>(pageUrl(url), RestUser::class.java, ACCEPT))
+            Page(page.items.map(RestUser::login), page.nextLink)
+        }.distinct().sortedWith(String.CASE_INSENSITIVE_ORDER)
+
+    override suspend fun changeAssignees(
+        number: Long,
+        add: Collection<String>,
+        remove: Collection<String>,
+    ): AssigneeChange {
+        val url = "$issuesUrl/$number/assignees"
+        val failed = linkedMapOf<String, IssuesFailure>()
+        // One request per person, so a single failure neither blocks nor hides the other changes.
+        for (login in add) {
+            attempt(login, failed) {
+                request(GithubApiRequest.Post.Json(url, assigneesBody(login), RestIssue::class.java, ACCEPT))
+            }
+        }
+        for (login in remove) {
+            attempt(login, failed) {
+                request(GithubApiRequest.Delete.Json(url, assigneesBody(login), RestIssue::class.java))
+            }
+        }
+        return AssigneeChange(issue(number), failed)
+    }
+
+    private inline fun attempt(login: String, failed: MutableMap<String, IssuesFailure>, change: () -> Unit) {
+        try {
+            change()
+        } catch (error: IssuesFailure) {
+            // Without valid credentials every further request fails the same way.
+            if (error.offerSignIn) throw error
+            failed[login] = error
+        }
+    }
+
     private suspend fun <T> request(request: GithubApiRequest<T>): T = try {
         executor.execute(request)
     } catch (error: Exception) {
@@ -153,6 +192,8 @@ internal fun issueLabelUrl(repository: Repository, number: Long, label: String):
     return URI("https", "api.github.com", "/repos/${repository.fullName}/issues/$number/labels", null)
         .toASCIIString() + "/" + name
 }
+
+private fun assigneesBody(login: String): Map<String, List<String>> = mapOf("assignees" to listOf(login))
 
 internal suspend fun <T> allPages(start: String, load: suspend (String) -> Page<T>): List<T> {
     val items = mutableListOf<T>()

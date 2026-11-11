@@ -478,7 +478,7 @@ class IssuesTest {
 
     @Test
     fun `label picker filters repository labels and keeps labels missing from the repository`() {
-        val picker = LabelPicker(4, setOf("legacy", "bug"), setOf("legacy", "bug"), listOf("bug", "Docs", "ui"))
+        val picker = SelectionPicker(PickerKind.LABELS, 4, setOf("legacy", "bug"), setOf("legacy", "bug"), listOf("bug", "Docs", "ui"))
         assertEquals(listOf("bug", "Docs", "ui", "legacy"), picker.visible)
         assertEquals(listOf("Docs"), picker.copy(query = " doc ").visible)
         val changed = picker.copy(selected = setOf("bug", "ui"))
@@ -510,17 +510,17 @@ class IssuesTest {
         await { !model.state.value.detailLoading }
 
         model.startLabels()
-        await { model.state.value.labelPicker?.loading == false }
-        assertEquals(listOf("bug", "docs", "triage", "ui"), model.state.value.labelPicker?.available)
-        model.toggleLabel("docs")
-        model.toggleLabel("ui")
-        model.toggleLabel("triage")
-        model.toggleLabel("ui")
-        model.saveLabels()
+        await { model.state.value.picker?.loading == false }
+        assertEquals(listOf("bug", "docs", "triage", "ui"), model.state.value.picker?.available)
+        model.togglePicked("docs")
+        model.togglePicked("ui")
+        model.togglePicked("triage")
+        model.togglePicked("ui")
+        model.savePicker()
         await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
 
         assertEquals(listOf<Pair<Collection<String>, Collection<String>>>(listOf("docs") to listOf("triage")), changes)
-        assertNull(model.state.value.labelPicker)
+        assertNull(model.state.value.picker)
         assertNull(model.state.value.writeError)
         assertEquals(listOf("bug", "docs", "external"), model.state.value.issue?.labels)
         assertEquals(listOf(gateway.issue), model.state.value.issues.items)
@@ -546,15 +546,15 @@ class IssuesTest {
         await { !model.state.value.detailLoading }
 
         model.startLabels()
-        await { model.state.value.labelPicker?.loading == false }
-        assertEquals("No labels", model.state.value.labelPicker?.error?.message)
-        assertEquals(listOf("bug", "docs"), model.state.value.labelPicker?.visible)
-        model.toggleLabel("bug")
-        model.toggleLabel("docs")
-        model.saveLabels()
+        await { model.state.value.picker?.loading == false }
+        assertEquals("No labels", model.state.value.picker?.error?.message)
+        assertEquals(listOf("bug", "docs"), model.state.value.picker?.visible)
+        model.togglePicked("bug")
+        model.togglePicked("docs")
+        model.savePicker()
         await { !model.state.value.writing && !model.state.value.detailLoading }
         assertEquals("Save failed", model.state.value.writeError?.message)
-        assertNull(model.state.value.labelPicker)
+        assertNull(model.state.value.picker)
         assertEquals(listOf("docs"), model.state.value.issue?.labels)
     }
 
@@ -570,14 +570,138 @@ class IssuesTest {
         model.select(initial.number)
         await { !model.state.value.detailLoading }
         model.startLabels()
-        await { model.state.value.labelPicker?.loading == false }
-        model.toggleLabel("bug")
-        model.toggleLabel("docs")
-        model.saveLabels()
+        await { model.state.value.picker?.loading == false }
+        model.togglePicked("bug")
+        model.togglePicked("docs")
+        model.savePicker()
         await { !model.state.value.writing && !model.state.value.detailLoading }
         assertNull(model.state.value.feedback)
         assertTrue(model.state.value.writeError?.message.orEmpty().contains("(docs, bug)"))
         assertEquals(initial, model.state.value.issue)
+    }
+
+    @Test
+    fun `assignable people are read from every page of the GitHub response`() = runBlocking {
+        val page = GithubApiRequest.Get.JsonPage("https://api.github.com/example", RestUser::class.java)
+            .extractResult(response("""[{"login":"alice","id":1},{"login":"bob","id":2}]""", "page2"))
+        assertEquals(listOf("alice", "bob"), page.items.map(RestUser::login))
+        assertEquals("page2", page.nextLink)
+    }
+
+    @Test
+    fun `assign me is offered only to an assignable account that is not assigned yet`() = runBlocking {
+        val initial = Issue(4, "Issue", true, null, "", emptyList(), listOf("bob"))
+        val changes = mutableListOf<Pair<Collection<String>, Collection<String>>>()
+        val gateway = object : StubGateway(initial) {
+            override suspend fun assignees() = listOf("Alice", "bob")
+
+            override suspend fun changeAssignees(number: Long, add: Collection<String>, remove: Collection<String>):
+                AssigneeChange {
+                changes += add to remove
+                issue = issue.copy(assignees = issue.assignees + add)
+                return AssigneeChange(issue)
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway, viewer = "alice")
+        await { !model.state.value.listLoading }
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+
+        model.startAssignees()
+        assertNull(model.state.value.assignableViewer)
+        await { model.state.value.picker?.loading == false }
+        assertEquals("Alice", model.state.value.assignableViewer)
+        model.assignMe()
+        await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
+        assertEquals(listOf<Pair<Collection<String>, Collection<String>>>(listOf("Alice") to emptyList()), changes)
+        assertEquals(listOf("bob", "Alice"), model.state.value.issue?.assignees)
+        assertEquals("Updated assignees of issue #4.", model.state.value.feedback)
+
+        model.startAssignees()
+        await { model.state.value.picker?.loading == false }
+        assertNull(model.state.value.assignableViewer)
+        model.cancelPicker()
+
+        val stranger = IssuesModel(this)
+        stranger.connect(gateway, viewer = "mallory")
+        await { !stranger.state.value.listLoading }
+        stranger.select(initial.number)
+        await { !stranger.state.value.detailLoading }
+        stranger.startAssignees()
+        await { stranger.state.value.picker?.loading == false }
+        assertNull(stranger.state.value.assignableViewer)
+        stranger.assignMe()
+        assertFalse(stranger.state.value.writing)
+        assertEquals(1, changes.size)
+    }
+
+    @Test
+    fun `saving assignees keeps concurrent changes and reports failed and ignored people separately`() = runBlocking {
+        val initial = Issue(4, "Issue", true, null, "", listOf("bug"), listOf("alice", "bob"))
+        val gateway = object : StubGateway(initial) {
+            override suspend fun assignees() = listOf("alice", "bob", "carol", "dave")
+
+            override suspend fun changeAssignees(number: Long, add: Collection<String>, remove: Collection<String>):
+                AssigneeChange {
+                assertEquals(listOf("carol", "dave"), add.toList())
+                assertEquals(listOf("bob"), remove.toList())
+                // GitHub ignores "dave" silently, refuses removing "bob" and someone else added "erin" meanwhile.
+                issue = issue.copy(assignees = listOf("alice", "bob", "carol", "erin"))
+                return AssigneeChange(issue, mapOf("bob" to IssuesFailure("GitHub returned 403.")))
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway, viewer = "alice")
+        await { !model.state.value.listLoading }
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+
+        model.startAssignees()
+        await { model.state.value.picker?.loading == false }
+        assertEquals(PickerKind.ASSIGNEES, model.state.value.picker?.kind)
+        model.togglePicked("carol")
+        model.togglePicked("dave")
+        model.togglePicked("bob")
+        model.savePicker()
+        await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
+
+        assertNull(model.state.value.picker)
+        assertNull(model.state.value.feedback)
+        assertEquals(listOf("alice", "bob", "carol", "erin"), model.state.value.issue?.assignees)
+        assertEquals(listOf("bug"), model.state.value.issue?.labels)
+        val error = model.state.value.writeError?.message.orEmpty()
+        assertTrue(error.contains("Could not change bob: GitHub returned 403."), error)
+        assertTrue(error.contains("assignee changes (dave)"), error)
+    }
+
+    @Test
+    fun `a failed assignee save closes the picker and reloads the issue from GitHub`() = runBlocking {
+        val initial = Issue(4, "Issue", true, null, "", emptyList(), listOf("alice"))
+        val gateway = object : StubGateway(initial) {
+            override suspend fun assignees(): List<String> = throw IssuesFailure("No assignees")
+
+            override suspend fun changeAssignees(number: Long, add: Collection<String>, remove: Collection<String>):
+                AssigneeChange {
+                issue = issue.copy(assignees = emptyList())
+                throw IssuesFailure("Reload failed")
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+        model.startAssignees()
+        await { model.state.value.picker?.loading == false }
+        assertEquals("No assignees", model.state.value.picker?.error?.message)
+        assertEquals(listOf("alice"), model.state.value.picker?.visible)
+        model.togglePicked("alice")
+        model.savePicker()
+        await { !model.state.value.writing && !model.state.value.detailLoading }
+        assertEquals("Reload failed", model.state.value.writeError?.message)
+        assertNull(model.state.value.picker)
+        assertEquals(emptyList(), model.state.value.issue?.assignees)
     }
 
     private suspend fun await(condition: () -> Boolean) {
@@ -600,6 +724,10 @@ class IssuesTest {
         override suspend fun labels(): List<String> = error("Unexpected label list")
         override suspend fun changeLabels(number: Long, add: Collection<String>, remove: Collection<String>): Issue =
             error("Unexpected label change")
+
+        override suspend fun assignees(): List<String> = error("Unexpected assignee list")
+        override suspend fun changeAssignees(number: Long, add: Collection<String>, remove: Collection<String>):
+            AssigneeChange = error("Unexpected assignee change")
     }
 
     private fun response(json: String, next: String? = null): GithubApiResponse = object : GithubApiResponse {

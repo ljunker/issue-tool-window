@@ -92,6 +92,17 @@ internal interface IssuesGateway {
 
     /** Adds and removes only the given labels and returns the issue as GitHub stores it afterwards. */
     suspend fun changeLabels(number: Long, add: Collection<String>, remove: Collection<String>): Issue
+
+    /** Logins of everyone who can be assigned to issues of the repository, across every result page. */
+    suspend fun assignees(): List<String>
+
+    /**
+     * Adds and removes each given person separately, so assignees changed elsewhere stay untouched, and returns the
+     * issue as GitHub stores it afterwards together with the changes that failed.
+     */
+    suspend fun changeAssignees(number: Long, add: Collection<String>, remove: Collection<String>): AssigneeChange
 }
+
+internal data class AssigneeChange(val issue: Issue, val failed: Map<String, IssuesFailure> = emptyMap())
 
 internal class IssuesFailure(message: String, val offerSignIn: Boolean = false) : Exception(message)
