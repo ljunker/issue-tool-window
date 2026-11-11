@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "dev.issuetoolwindow"
-version = providers.gradleProperty("pluginVersion").getOrElse("0.1.0")
+version = providers.gradleProperty("pluginVersion").getOrElse("0.0.0-SNAPSHOT")
 
 val ideaVersion = "2026.3"
 val localIdea = providers.gradleProperty("ideaLocalPath")
@@ -33,10 +33,22 @@ kotlin { jvmToolchain(25) }
 intellijPlatform {
     buildSearchableOptions = false
     pluginConfiguration {
+        version = project.version.toString()
+        // Release-Workflow übergibt die Änderungen seit dem letzten Release als HTML.
+        changeNotes = providers.gradleProperty("pluginChangeNotes")
         ideaVersion {
             sinceBuild = "263"
             untilBuild = "263.*"
         }
+    }
+    signing {
+        certificateChain = providers.environmentVariable("CERTIFICATE_CHAIN")
+        privateKey = providers.environmentVariable("PRIVATE_KEY")
+        password = providers.environmentVariable("PRIVATE_KEY_PASSWORD")
+    }
+    publishing {
+        token = providers.environmentVariable("PUBLISH_TOKEN")
+        channels = providers.gradleProperty("pluginChannel").map { listOf(it) }.orElse(listOf("default"))
     }
     pluginVerification {
         ides { current() }
