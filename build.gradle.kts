@@ -28,7 +28,14 @@ dependencies {
     testImplementation(kotlin("test-junit"))
 }
 
-kotlin { jvmToolchain(25) }
+kotlin {
+    jvmToolchain(25)
+    compilerOptions {
+        // Keine Kompatibilitäts-Bridges für Interface-Defaults erzeugen; sonst ruft z. B. die
+        // ToolWindowFactory die veralteten isApplicable/isDoNotActivateOnStart auf (Plugin Verifier).
+        jvmDefault.set(org.jetbrains.kotlin.gradle.dsl.JvmDefaultMode.NO_COMPATIBILITY)
+    }
+}
 
 intellijPlatform {
     buildSearchableOptions = false
