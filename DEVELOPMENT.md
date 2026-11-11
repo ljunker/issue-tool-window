@@ -27,19 +27,6 @@ den neuesten Release jeder IDEA-Hauptversion ab Build 263. Neue IDEA-Versionen w
 sie erscheinen. Die Liste der Releases kommt von JetBrains; dafür und für den Download der IDEs braucht der Task
 Netzzugang. Kompatibilitätsprobleme lassen den Build scheitern.
 
-### Interne API
-
-Für das Öffnen von Pull-Request-Links im Fenster **Pull Requests** nutzt das Plugin bewusst interne API des
-GitHub-Plugins (`GHPRProjectViewModel`). Eine öffentliche Alternative gibt es nicht.
-
-Der Plugin Verifier kann interne API nicht gezielt erlauben. Deshalb lässt `verifyPlugin` interne API nicht pauschal
-scheitern, sondern prüft danach jede `internal-api-usages.txt` unter `build/reports/pluginVerifier/` gegen die Muster in
-`verifier-allowed-internal-api.txt`. Jede Fundstelle, die dort nicht steht, lässt den Task scheitern. Neue interne API
-also nur bewusst und mit Begründung in diese Datei aufnehmen.
-
-Ändert JetBrains die API, meldet `verifyPlugin` ein Kompatibilitätsproblem. Zur Laufzeit öffnet das Plugin den Link
-dann im Browser.
-
 ## Sandbox-Abnahme vor einem Release
 
 1. Mit `runIde` ein privates GitHub-Testrepository mit aktivierten Issues öffnen. Im Pull-Request-Fenster mit dem
