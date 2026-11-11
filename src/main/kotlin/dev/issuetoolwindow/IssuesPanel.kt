@@ -285,6 +285,7 @@ internal class IssuesPanel(
 internal class IssueDetailsPanel(
     private val model: IssuesModel,
     openOnGitHub: (Long) -> Unit,
+    createBranch: (Issue) -> Unit,
     parent: Disposable,
 ) {
     private val detailCards = CardLayout()
@@ -320,6 +321,7 @@ internal class IssueDetailsPanel(
     private val edit = button("action.edit", model::startEdit)
     private val editLabels = button("action.labels", model::startLabels)
     private val editAssignees = button("action.assignees", model::startAssignees)
+    private val branch = button("action.branch") { model.state.value.issue?.let(createBranch) }
     private val browser =
         ActionLink(message("action.browser")) { model.state.value.issue?.let { openOnGitHub(it.number) } }
     private val comment = textArea(3).apply {
@@ -369,7 +371,7 @@ internal class IssueDetailsPanel(
             border = JBUI.Borders.empty(0, 20)
         }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(stack(row(toggleStatus, edit, editLabels, editAssignees, browser), detailStatus), BorderLayout.NORTH)
+            add(stack(row(toggleStatus, edit, editLabels, editAssignees, branch, browser), detailStatus), BorderLayout.NORTH)
             add(issueScroll, BorderLayout.CENTER)
             add(composer, BorderLayout.SOUTH)
         }
@@ -487,6 +489,7 @@ internal class IssueDetailsPanel(
         edit.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editLabels.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editAssignees.isEnabled = editLabels.isEnabled
+        branch.isEnabled = !state.writing
         comment.syncText(state.commentDraft)
         comment.isEditable = !state.writing
         post.isEnabled = !state.writing && !state.needsSignIn && state.commentDraft.isNotBlank()

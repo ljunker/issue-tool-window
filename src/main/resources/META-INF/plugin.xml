@@ -12,11 +12,13 @@
       <li>Read issue details, Markdown descriptions, comments and activity in an editor tab</li>
       <li>Create and edit issues, post comments, close and reopen issues</li>
       <li>Add and remove labels, change assignees or assign yourself</li>
+      <li>Create and check out a local Git branch for an issue</li>
     </ul>
     <p>Source code and issue tracker:
     <a href="https://github.com/ljunker/issue-tool-window">github.com/ljunker/issue-tool-window</a></p>
   ]]></description>
   <depends>com.intellij.modules.platform</depends>
+  <depends>com.intellij.platform.vcs</depends>
   <depends>Git4Idea</depends>
   <depends>org.jetbrains.plugins.github</depends>
   <resource-bundle>messages.IssuesBundle</resource-bundle>

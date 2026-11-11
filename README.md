@@ -29,6 +29,11 @@ Unterstützt wird IntelliJ IDEA **2026.3** (Build-Reihe `263.*`).
    es zuweisbar ist. Danach zeigt der Tab die von GitHub gespeicherten Zuständigkeiten und nennt abgelehnte oder
    ignorierte Änderungen. Im Tab stehen
    auch **Post Comment**, **Close Issue** und **Reopen Issue** zur Verfügung.
+7. **Create Branch…** schlägt einen editierbaren Branch-Namen aus Issue-Nummer und Titel vor, etwa
+   `9-lokalen-git-branch-aus-einem-issue-erstellen`. Passen mehrere lokale Git-Roots zum Repository, wird der Root im
+   Dialog gewählt. **Create and Checkout** erstellt den Branch vom aktuellen HEAD und wechselt darauf. Lokale Änderungen
+   bleiben erhalten, gepusht wird nichts. Ungültige oder bereits vergebene Namen sowie ein laufender Merge, Rebase,
+   Cherry-Pick oder Revert werden direkt im Dialog gemeldet.
 
 ## Build und Abnahme
 

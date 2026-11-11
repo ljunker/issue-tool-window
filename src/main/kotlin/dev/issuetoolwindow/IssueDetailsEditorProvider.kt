@@ -24,6 +24,7 @@ import javax.swing.JComponent
 internal class IssueDetailsFile(
     val model: IssuesModel,
     val openOnGitHub: (Long) -> Unit,
+    val createBranch: (Issue) -> Unit,
 ) : LightVirtualFile(message("detail.tab")), VirtualFileWithoutContent
 
 class IssueDetailsEditorProvider : FileEditorProvider, DumbAware {
@@ -40,7 +41,7 @@ class IssueDetailsEditorProvider : FileEditorProvider, DumbAware {
 @OptIn(ExperimentalCoroutinesApi::class)
 private class IssueDetailsEditor(private val issueFile: IssueDetailsFile) : UserDataHolderBase(), FileEditor {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
-    private val view = IssueDetailsPanel(issueFile.model, issueFile.openOnGitHub, this)
+    private val view = IssueDetailsPanel(issueFile.model, issueFile.openOnGitHub, issueFile.createBranch, this)
 
     init {
         view.render(issueFile.model.state.value)
