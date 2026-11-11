@@ -10,6 +10,7 @@ GitHub-Konto, das in IDEA bereits für **Pull Requests** eingerichtet ist.
 - **Filter** nach Status (Open, Closed, All), Label und Assignee – inklusive **Assigned to me**
 - **Volltextsuche** in Titel und Beschreibung; `#42` öffnet Issue 42 direkt
 - **Issue-Details** mit Kommentaren in einem Editor-Tab, der sich alle 30 Sekunden im Hintergrund aktualisiert
+- **Pull-Request-Links** des Repositorys öffnen den PR im Pull-Request-Fenster von IDEA statt im Browser
 - **Issues anlegen und bearbeiten**: Titel und Markdown-Beschreibung, Labels, Assignees
 - **Kommentieren, schließen und wieder öffnen**
 - **Branch aus Issue erstellen**: Branch-Name aus Nummer und Titel, direkt ausgecheckt
@@ -51,6 +52,10 @@ Bei Bedarf IDEA anschließend neu starten.
 Ein Issue in der Liste auswählen, um Details und Kommentare im Editor-Tab **GitHub Issue** zu öffnen. Solange der Tab
 sichtbar ist, lädt er das Issue alle 30 Sekunden im Hintergrund nach; auf GitHub ergänzte Kommentare und Änderungen
 erscheinen so ohne erneutes Öffnen.
+
+Links zu Pull Requests des gewählten Repositorys – in der Aktivität sowie in Beschreibung und Kommentaren – öffnen den
+PR im **Pull Requests**-Fenster von IDEA mit Repository und Konto des Issue-Fensters. Alle anderen Links öffnen den
+Browser.
 
 | Aktion                                     | Wirkung                                                                                                                                 |
 |--------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------|

@@ -35,6 +35,20 @@ internal object IssueMarkdown {
     } catch (_: URISyntaxException) {
         null
     }
+
+    /**
+     * Number of the pull request [uri] points to on github.com in [repository], e.g. `/owner/repo/pull/14/files`;
+     * `null` for any other link.
+     */
+    fun pullRequestNumber(uri: URI, repository: Repository): Long? {
+        if (!uri.host.equals("github.com", ignoreCase = true) && !uri.host.equals("www.github.com", ignoreCase = true)) {
+            return null
+        }
+        val segments = uri.path.orEmpty().split('/').filter(String::isNotEmpty)
+        if (segments.size < 4 || segments[2] != "pull") return null
+        if (!"${segments[0]}/${segments[1]}".equals(repository.fullName, ignoreCase = true)) return null
+        return segments[3].takeIf { it.all(Char::isDigit) }?.toLongOrNull()?.takeIf { it > 0 }
+    }
 }
 
 private class IssueMarkdownNodes(private val context: HtmlNodeRendererContext) : NodeRenderer {

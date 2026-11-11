@@ -10,6 +10,7 @@
       <li>Filter by status, label and assignee (including issues assigned to you) and search in title and description</li>
       <li>Open an issue directly with <code>#42</code></li>
       <li>Read issue details, Markdown descriptions, comments and activity in an editor tab</li>
+      <li>Open linked pull requests of the repository in the <b>Pull Requests</b> tool window</li>
       <li>Create and edit issues, post comments, close and reopen issues</li>
       <li>Add and remove labels, change assignees or assign yourself</li>
       <li>Create and check out a local Git branch for an issue</li>

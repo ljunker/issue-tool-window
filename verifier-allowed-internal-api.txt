@@ -1,0 +1,9 @@
+// Erlaubte Nutzung interner API, geprüft von verifyPlugin gegen jede internal-api-usages.txt des Plugin Verifiers.
+// Jede Zeile ist ein regulärer Ausdruck, der eine ganze Berichtszeile treffen muss; "//" leitet Kommentare ein.
+//
+// #37: PR-Links aus Issues im Fenster "Pull Requests" öffnen. Das GitHub-Plugin bietet dafür keine öffentliche API.
+// Fehlt sie zur Laufzeit, öffnet das Plugin den Link im Browser.
+Internal class org\.jetbrains\.plugins\.github\.pullrequest\.ui\.GHPRProjectViewModel is referenced in dev\.issuetoolwindow\.IssuesToolWindow\.openPullRequest\(.*
+Internal method org\.jetbrains\.plugins\.github\.pullrequest\.ui\.GHPRProjectViewModel\.activateAndAwaitProject\(.*\) : void is invoked in dev\.issuetoolwindow\.IssuesToolWindow\.openPullRequest\(.*
+Internal interface org\.jetbrains\.plugins\.github\.pullrequest\.ui\.GHPRConnectedProjectViewModel is referenced in dev\.issuetoolwindow\.IssuesToolWindow\.openPullRequest\$lambda\$\d+\(.*
+Internal method org\.jetbrains\.plugins\.github\.pullrequest\.ui\.GHPRConnectedProjectViewModel\.openPullRequestInfoAndTimeline\(.*\) : void is invoked in dev\.issuetoolwindow\.IssuesToolWindow\.openPullRequest\$lambda\$\d+\(.*
