@@ -1,0 +1,15 @@
+<idea-plugin>
+  <depends>com.intellij.modules.platform</depends>
+  <depends>Git4Idea</depends>
+  <depends>org.jetbrains.plugins.github</depends>
+  <description>Browse, comment on, create, close, and reopen issues from the current project's GitHub repositories.
+  </description>
+  <extensions defaultExtensionNs="com.intellij">
+    <toolWindow anchor="left" factoryClass="dev.issuetoolwindow.IssuesToolWindowFactory" icon="/icons/issues.svg" id="GitHub Issues"
+      secondary="true"/>
+  </extensions>
+  <id>dev.issuetoolwindow.github</id>
+  <name>GitHub Issues</name>
+  <resource-bundle>messages.IssuesBundle</resource-bundle>
+  <vendor>Issue Tool Window</vendor>
+</idea-plugin>

@@ -1,0 +1,40 @@
+plugins {
+    kotlin("jvm") version "2.4.21"
+    id("org.jetbrains.intellij.platform") version "2.20.1"
+}
+
+group = "dev.issuetoolwindow"
+version = "0.1.0"
+
+val ideaVersion = "2026.3"
+val localIdea = providers.gradleProperty("ideaLocalPath")
+
+repositories {
+    mavenCentral()
+    intellijPlatform { defaultRepositories() }
+}
+
+dependencies {
+    intellijPlatform {
+        if (localIdea.isPresent) local(localIdea.get()) else intellijIdea(ideaVersion)
+        bundledPlugin("Git4Idea")
+        bundledPlugin("org.jetbrains.plugins.github")
+        pluginVerifier()
+    }
+    testImplementation(kotlin("test-junit"))
+}
+
+kotlin { jvmToolchain(25) }
+
+intellijPlatform {
+    buildSearchableOptions = false
+    pluginConfiguration {
+        ideaVersion {
+            sinceBuild = "263"
+            untilBuild = "263.*"
+        }
+    }
+    pluginVerification {
+        ides { current() }
+    }
+}
