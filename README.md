@@ -10,7 +10,11 @@ GitHub-Konto aus IDEA, das auch im Fenster **Pull Requests** zur Verfügung steh
 2. Ein Git-Projekt mit einem GitHub.com-Remote öffnen. Unter **View → Tool Windows → GitHub Issues** das Fenster öffnen.
 3. Bei mehreren Repositories oder Konten die passende Auswahl treffen. **Sign In to GitHub** öffnet bei Bedarf den
    Anmeldedialog von IDEA.
-4. Mit **Open**, **Closed** und **All** filtern. Ein Issue auswählen, um Details und Kommentare zu sehen. **New Issue**
+4. Mit **Open**, **Closed** und **All** filtern. Über **Search** oder Enter in Titel und Beschreibung suchen; der
+   Statusfilter gilt weiter. **Load More** lädt weitere Treffer. Das Suchfeld leeren, um zur normalen Liste
+   zurückzukehren.
+   Mit `#42` und Enter das Issue 42 direkt öffnen, auch wenn es geschlossen ist oder noch nicht in der Liste steht.
+5. Ein Issue auswählen, um Details und Kommentare zu sehen. **New Issue**
    legt ein Issue an. **Edit Issue** öffnet den Titel und den Markdown-Quelltext der Beschreibung zur Bearbeitung.
    In den Details stehen auch **Post Comment**, **Close Issue** und **Reopen Issue** zur Verfügung.
 

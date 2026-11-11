@@ -15,6 +15,8 @@ internal data class IssueEditor(val draft: IssueDraft, val issueNumber: Long? = 
 internal data class IssuesState(
     val connected: Boolean = false,
     val filter: IssueFilter = IssueFilter.OPEN,
+    val searchInput: String = "",
+    val searchQuery: String? = null,
     val issues: Page<Issue> = Page(emptyList(), null),
     val selected: Long? = null,
     val issue: Issue? = null,
@@ -64,7 +66,35 @@ internal class IssuesModel(private val scope: CoroutineScope) {
 
     fun filter(filter: IssueFilter) {
         if (current.writing || current.editor != null || filter == current.filter) return
-        update { copy(filter = filter, issues = Page(emptyList(), null), feedback = null) }
+        update { copy(filter = filter) }
+        showList(current.searchQuery)
+    }
+
+    fun editSearch(input: String) {
+        if (!current.connected || current.writing || current.editor != null) return
+        update { copy(searchInput = input) }
+        if (input.isBlank() && current.searchQuery != null) showList(null)
+    }
+
+    fun search() {
+        if (!current.connected || current.writing || current.editor != null) return
+        val input = current.searchInput.trim()
+        val digits = input.drop(1)
+        if (input.startsWith('#') && digits.isNotEmpty() && digits.all { it in '0'..'9' }) {
+            if (current.searchQuery != null) showList(null) else select(null)
+            val number = digits.toLongOrNull()
+            if (number == null || number == 0L) {
+                update { copy(detailError = IssuesFailure(message("error.issueNotFound", digits))) }
+            } else {
+                select(number)
+            }
+        } else if (input.isNotEmpty() || current.searchQuery != null) {
+            showList(input.ifEmpty { null })
+        }
+    }
+
+    private fun showList(query: String?) {
+        update { copy(searchQuery = query, issues = Page(emptyList(), null), detailError = null, feedback = null) }
         select(null)
         loadList()
     }
@@ -77,11 +107,12 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private fun loadList(next: String? = null) {
         val source = gateway ?: return
         val filter = current.filter
+        val query = current.searchQuery
         listJob?.cancel()
         update { copy(listLoading = true, listError = null) }
         listJob = scope.launch {
             try {
-                val page = source.issues(filter, next)
+                val page = if (query == null) source.issues(filter, next) else source.search(query, filter, next)
                 ensureActive()
                 update {
                     val items = if (next == null) page.items else (issues.items + page.items).distinctBy(Issue::number)
@@ -179,6 +210,8 @@ internal class IssuesModel(private val scope: CoroutineScope) {
             update {
                 copy(
                     filter = IssueFilter.OPEN,
+                    searchInput = "",
+                    searchQuery = null,
                     issues = Page((listOf(created) + issues.items.filter { it.open }).distinctBy(Issue::number), null),
                     selected = created.number,
                     issue = created,
@@ -198,16 +231,20 @@ internal class IssuesModel(private val scope: CoroutineScope) {
             listJob?.cancel()
             detailJob?.cancel()
             update {
-                val items = issues.items.map { if (it.number == number) changed else it }.filter(filter::includes)
+                val updatedList = if (searchQuery != null) Page(emptyList(), null) else {
+                    issues.copy(items = issues.items.map { if (it.number == number) changed else it }
+                        .filter(filter::includes))
+                }
                 copy(
                     issue = changed,
-                    issues = issues.copy(items = items),
+                    issues = updatedList,
                     listLoading = false,
                     detailLoading = false,
                     editor = null,
                     feedback = message("feedback.updated", number),
                 )
             }
+            if (current.searchQuery != null) loadList()
         }
     }
 
