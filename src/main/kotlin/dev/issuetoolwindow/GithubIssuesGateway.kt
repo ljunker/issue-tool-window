@@ -35,6 +35,13 @@ internal class GithubIssuesGateway(repository: Repository, account: GithubAccoun
         return request(GithubApiRequest.Post.Json(issuesUrl, fields, RestIssue::class.java, ACCEPT)).toIssue()
     }
 
+    override suspend fun updateIssue(number: Long, title: String, body: String): Issue =
+        request(
+            GithubApiRequest.Patch.Json(
+                "$issuesUrl/$number", mapOf("title" to title, "body" to body), RestIssue::class.java,
+            )
+        ).toIssue()
+
     override suspend fun addComment(number: Long, body: String): Comment =
         request(
             GithubApiRequest.Post.Json(

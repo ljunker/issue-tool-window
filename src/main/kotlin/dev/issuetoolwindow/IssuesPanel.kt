@@ -70,6 +70,7 @@ internal class IssuesPanel(
     private val issueText = textArea(6).apply { isEditable = false }
     private val moreComments = button("action.more", model::moreComments)
     private val toggleStatus = button("action.close", model::toggleStatus)
+    private val edit = button("action.edit", model::startEdit)
     private val browser =
         ActionLink(message("action.browser")) { model.state.value.issue?.let { openOnGitHub(it.number) } }
     private val comment = textArea(3).apply {
@@ -78,10 +79,11 @@ internal class IssuesPanel(
     }
     private val post = button("action.comment", model::comment)
 
+    private val editorHeading = JBLabel()
     private val title = JBTextField()
     private val description = textArea(5)
-    private val create = button("action.create", model::create)
-    private val cancel = button("action.cancel", model::cancelCreate)
+    private val save = button("action.create", model::saveEditor)
+    private val cancel = button("action.cancel", model::cancelEditor)
     private val feedback = textArea(2).apply { isEditable = false }
     private val feedbackScroll = JBScrollPane(feedback).apply { isVisible = false }
 
@@ -89,7 +91,7 @@ internal class IssuesPanel(
     private var updating = false
     private var renderedIssues = emptyList<Issue>()
     private var renderedDetail: Long? = null
-    private var wasCreating = false
+    private var wasEditing = false
     private var contextSignIn = false
 
     init {
@@ -103,18 +105,21 @@ internal class IssuesPanel(
             add(row(moreIssues), BorderLayout.SOUTH)
         }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(stack(row(toggleStatus), row(browser), detailStatus), BorderLayout.NORTH)
+            add(stack(row(toggleStatus), row(edit), row(browser), detailStatus), BorderLayout.NORTH)
             add(JBScrollPane(issueText), BorderLayout.CENTER)
             add(stack(row(moreComments), JBScrollPane(comment), row(post)), BorderLayout.SOUTH)
         }
         val form = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(stack(labelFor("create.title", title), title, labelFor("create.body", description)), BorderLayout.NORTH)
+            add(
+                stack(editorHeading, labelFor("editor.title", title), title, labelFor("editor.body", description)),
+                BorderLayout.NORTH,
+            )
             add(JBScrollPane(description), BorderLayout.CENTER)
-            add(row(create, cancel), BorderLayout.SOUTH)
+            add(row(save, cancel), BorderLayout.SOUTH)
         }
         details.add(JBLabel(message("detail.empty")), "empty")
         details.add(detail, "issue")
-        details.add(form, "create")
+        details.add(form, "editor")
 
         workspace = JPanel(BorderLayout()).apply {
             add(JBSplitter(true, 0.36f).apply {
@@ -179,8 +184,8 @@ internal class IssuesPanel(
             renderSignIn(state)
             repositories.isEnabled = !state.writing
             accounts.isEnabled = !state.writing
-            val creating = state.newIssue != null
-            val canNavigate = !state.writing && !creating
+            val editor = state.editor
+            val canNavigate = !state.writing && editor == null
             filters.selectedItem = state.filter
             filters.isEnabled = canNavigate
             issueList.isEnabled = canNavigate
@@ -203,16 +208,19 @@ internal class IssuesPanel(
             listStatus.isVisible = listStatus.text.isNotEmpty()
 
             when {
-                creating -> {
-                    val draft = requireNotNull(state.newIssue)
+                editor != null -> {
+                    val (draft, number) = editor
+                    editorHeading.text = number?.let { message("editor.issue", it.toString()) }.orEmpty()
+                    editorHeading.isVisible = number != null
                     title.syncText(draft.title)
                     description.syncText(draft.body)
                     title.isEditable = !state.writing
                     description.isEditable = !state.writing
-                    create.isEnabled = !state.writing && !state.needsSignIn && draft.title.isNotBlank()
+                    save.text = message(if (number == null) "action.create" else "action.save")
+                    save.isEnabled = !state.writing && !state.needsSignIn && draft.title.isNotBlank()
                     cancel.isEnabled = !state.writing
-                    detailCards.show(details, "create")
-                    if (!wasCreating) title.requestFocusInWindow()
+                    detailCards.show(details, "editor")
+                    if (!wasEditing) title.requestFocusInWindow()
                 }
 
                 state.issue != null -> {
@@ -222,7 +230,7 @@ internal class IssuesPanel(
 
                 else -> detailCards.show(details, "empty")
             }
-            wasCreating = creating
+            wasEditing = editor != null
 
             val error = state.writeError ?: state.detailError ?: state.listError
             val status = if (state.writing) message("feedback.writing")
@@ -266,6 +274,7 @@ internal class IssuesPanel(
         moreComments.isEnabled = !state.detailLoading && !state.writing
         toggleStatus.text = message(if (issue.open) "action.close" else "action.reopen")
         toggleStatus.isEnabled = !state.writing && !state.needsSignIn
+        edit.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         comment.syncText(state.commentDraft)
         comment.isEditable = !state.writing
         post.isEnabled = !state.writing && !state.needsSignIn && state.commentDraft.isNotBlank()
@@ -277,7 +286,7 @@ internal class IssuesPanel(
         signInLink.isEnabled = !state.writing
     }
 
-    private fun updateDraft() = model.editIssue(IssueDraft(title.text, description.text))
+    private fun updateDraft() = model.editDraft(IssueDraft(title.text, description.text))
 
     private fun JTextComponent.onEdit(onChange: () -> Unit) {
         document.addDocumentListener(object : DocumentAdapter() {

@@ -49,6 +49,7 @@ internal interface IssuesGateway {
     suspend fun issue(number: Long): Issue
     suspend fun comments(number: Long, next: String?): Page<Comment>
     suspend fun create(title: String, body: String?): Issue
+    suspend fun updateIssue(number: Long, title: String, body: String): Issue
     suspend fun addComment(number: Long, body: String): Comment
     suspend fun setOpen(number: Long, open: Boolean): Issue
 }
