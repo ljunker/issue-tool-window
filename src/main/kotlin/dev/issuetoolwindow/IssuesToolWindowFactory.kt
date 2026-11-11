@@ -4,6 +4,8 @@ import com.intellij.ide.BrowserUtil
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.EDT
 import com.intellij.openapi.components.service
+import com.intellij.openapi.fileEditor.FileEditorManager
+import com.intellij.openapi.fileEditor.FileEditorOpenRequest
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
@@ -12,6 +14,7 @@ import com.intellij.ui.content.ContentFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
@@ -35,9 +38,12 @@ class IssuesToolWindowFactory : ToolWindowFactory, DumbAware {
 private class IssuesToolWindow(private val project: Project) : Disposable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     private val model = IssuesModel(scope)
-    private val view = IssuesPanel(model, ::chooseRepository, ::chooseAccount, ::signIn, ::openOnGitHub)
+    private val editorManager = FileEditorManager.getInstance(project)
+    private val detailsFile = IssueDetailsFile(model, ::openOnGitHub)
+    private val view = IssuesPanel(model, ::chooseRepository, ::chooseAccount, ::signIn, ::showDetails)
     val panel = view.panel
 
+    private var openDetailsJob: Job? = null
     private var repositories = emptyList<Repository>()
     private var accounts = emptyList<GithubAccount>()
     private var repository: Repository? = null
@@ -65,7 +71,26 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
                 updateContext()
             }
         }
-        scope.launch { model.state.collect(view::render) }
+        scope.launch {
+            model.state.collect { state ->
+                view.render(state)
+                if (state.selected == null && state.editor == null) closeDetails()
+            }
+        }
+    }
+
+    private fun showDetails(focus: Boolean) {
+        if (!focus && (editorManager.currentFile == detailsFile || openDetailsJob?.isActive == true)) return
+        openDetailsJob?.cancel()
+        openDetailsJob = scope.launch {
+            val request = FileEditorOpenRequest.withFocus(focus).withReuseOpen(true)
+            editorManager.openFile(detailsFile, request)
+        }
+    }
+
+    private fun closeDetails() {
+        openDetailsJob?.cancel()
+        if (editorManager.isFileOpen(detailsFile)) editorManager.closeFile(detailsFile)
     }
 
     private fun chooseRepository(repo: Repository) {
@@ -115,5 +140,6 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
 
     override fun dispose() {
         scope.cancel()
+        if (!project.isDisposed) closeDetails()
     }
 }

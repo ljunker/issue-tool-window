@@ -5,6 +5,7 @@
   <description>Browse, comment on, create, close, and reopen issues from the current project's GitHub repositories.
   </description>
   <extensions defaultExtensionNs="com.intellij">
+    <fileEditorProvider implementation="dev.issuetoolwindow.IssueDetailsEditorProvider"/>
     <toolWindow anchor="left" factoryClass="dev.issuetoolwindow.IssuesToolWindowFactory" icon="/icons/issues.svg" id="GitHub Issues"
       secondary="true"/>
   </extensions>

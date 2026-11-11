@@ -2,7 +2,6 @@ package dev.issuetoolwindow
 
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.ui.DocumentAdapter
-import com.intellij.ui.JBSplitter
 import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
@@ -16,6 +15,11 @@ import java.awt.BorderLayout
 import java.awt.CardLayout
 import java.awt.Component
 import java.awt.FlowLayout
+import java.awt.event.ActionEvent
+import java.awt.event.KeyEvent
+import java.awt.event.MouseAdapter
+import java.awt.event.MouseEvent
+import javax.swing.AbstractAction
 import javax.swing.BoxLayout
 import javax.swing.DefaultComboBoxModel
 import javax.swing.DefaultListCellRenderer
@@ -23,6 +27,7 @@ import javax.swing.DefaultListModel
 import javax.swing.JButton
 import javax.swing.JList
 import javax.swing.JPanel
+import javax.swing.KeyStroke
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
 import javax.swing.event.DocumentEvent
@@ -33,7 +38,7 @@ internal class IssuesPanel(
     chooseRepository: (Repository) -> Unit,
     chooseAccount: (GithubAccount) -> Unit,
     signIn: () -> Unit,
-    openOnGitHub: (Long) -> Unit,
+    private val showDetails: (focus: Boolean) -> Unit,
 ) {
     val panel = JPanel(BorderLayout(JBUI.scale(6), JBUI.scale(6))).apply { border = JBUI.Borders.empty(8) }
     private val repositories = ComboBox<Repository>().apply {
@@ -56,9 +61,12 @@ internal class IssuesPanel(
         emptyText.text = message("search.prompt")
         accessibleContext.accessibleName = message("search.prompt")
     }
-    private val search = button("action.search", model::search)
+    private val search = button("action.search", ::submitSearch)
     private val refresh = button("action.refresh", model::refresh)
-    private val newIssue = button("action.new", model::startCreate)
+    private val newIssue = button("action.new") {
+        if (model.state.value.editor == null) model.startCreate()
+        if (model.state.value.editor != null) showDetails(true)
+    }
     private val listStatus = JBLabel()
     private val issueRows = DefaultListModel<Issue>()
     private val issueList = JBList(issueRows).apply {
@@ -69,35 +77,12 @@ internal class IssuesPanel(
     }
     private val moreIssues = button("action.more", model::moreIssues)
 
-    private val detailCards = CardLayout()
-    private val details = JPanel(detailCards)
-    private val detailPlaceholder = JBLabel()
-    private val detailStatus = JBLabel()
-    private val issueText = textArea(6).apply { isEditable = false }
-    private val moreComments = button("action.more", model::moreComments)
-    private val toggleStatus = button("action.close", model::toggleStatus)
-    private val edit = button("action.edit", model::startEdit)
-    private val browser =
-        ActionLink(message("action.browser")) { model.state.value.issue?.let { openOnGitHub(it.number) } }
-    private val comment = textArea(3).apply {
-        emptyText.text = message("detail.commentInput")
-        accessibleContext.accessibleName = message("detail.commentInput")
-    }
-    private val post = button("action.comment", model::comment)
-
-    private val editorHeading = JBLabel()
-    private val title = JBTextField()
-    private val description = textArea(5)
-    private val save = button("action.create", model::saveEditor)
-    private val cancel = button("action.cancel", model::cancelEditor)
     private val feedback = textArea(2).apply { isEditable = false }
     private val feedbackScroll = JBScrollPane(feedback).apply { isVisible = false }
 
     private val workspace: JPanel
     private var updating = false
     private var renderedIssues = emptyList<Issue>()
-    private var renderedDetail: Long? = null
-    private var wasEditing = false
     private var contextSignIn = false
 
     init {
@@ -109,34 +94,10 @@ internal class IssuesPanel(
             add(searchInput, BorderLayout.CENTER)
             add(search, BorderLayout.EAST)
         }
-        val list = JPanel(BorderLayout()).apply {
+        workspace = JPanel(BorderLayout()).apply {
             add(stack(row(filters, refresh), searchBar, row(newIssue), listStatus), BorderLayout.NORTH)
             add(JBScrollPane(issueList), BorderLayout.CENTER)
-            add(row(moreIssues), BorderLayout.SOUTH)
-        }
-        val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(stack(row(toggleStatus), row(edit), row(browser), detailStatus), BorderLayout.NORTH)
-            add(JBScrollPane(issueText), BorderLayout.CENTER)
-            add(stack(row(moreComments), JBScrollPane(comment), row(post)), BorderLayout.SOUTH)
-        }
-        val form = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(
-                stack(editorHeading, labelFor("editor.title", title), title, labelFor("editor.body", description)),
-                BorderLayout.NORTH,
-            )
-            add(JBScrollPane(description), BorderLayout.CENTER)
-            add(row(save, cancel), BorderLayout.SOUTH)
-        }
-        details.add(detailPlaceholder, "empty")
-        details.add(detail, "issue")
-        details.add(form, "editor")
-
-        workspace = JPanel(BorderLayout()).apply {
-            add(JBSplitter(true, 0.36f).apply {
-                firstComponent = list
-                secondComponent = details
-            }, BorderLayout.CENTER)
-            add(feedbackScroll, BorderLayout.SOUTH)
+            add(stack(row(moreIssues), feedbackScroll), BorderLayout.SOUTH)
             isVisible = false
         }
 
@@ -149,14 +110,24 @@ internal class IssuesPanel(
         repositories.addActionListener { if (!updating) (repositories.selectedItem as? Repository)?.let(chooseRepository) }
         accounts.addActionListener { if (!updating) (accounts.selectedItem as? GithubAccount)?.let(chooseAccount) }
         filters.addActionListener { if (!updating) (filters.selectedItem as? IssueFilter)?.let(model::filter) }
-        searchInput.addActionListener { model.search() }
+        searchInput.addActionListener { submitSearch() }
         searchInput.onEdit { if (!updating) model.editSearch(searchInput.text) }
         issueList.addListSelectionListener {
-            if (!updating && !it.valueIsAdjusting) issueList.selectedValue?.let { issue -> model.select(issue.number) }
+            if (!updating && !it.valueIsAdjusting && issueList.isEnabled) openSelectedIssue(false)
         }
-        comment.onEdit { if (!updating) model.editComment(comment.text) }
-        title.onEdit { if (!updating) updateDraft() }
-        description.onEdit { if (!updating) updateDraft() }
+        issueList.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(event: MouseEvent) {
+                if (event.button != MouseEvent.BUTTON1 || !issueList.isEnabled) return
+                val index = issueList.selectedIndex
+                if (index >= 0 && issueList.getCellBounds(index, index).contains(event.point)) openSelectedIssue(false)
+            }
+        })
+        issueList.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "openIssue")
+        issueList.actionMap.put("openIssue", object : AbstractAction() {
+            override fun actionPerformed(event: ActionEvent) {
+                if (issueList.isEnabled) openSelectedIssue(true)
+            }
+        })
     }
 
     fun showContext(
@@ -205,7 +176,8 @@ internal class IssuesPanel(
             search.isEnabled = canNavigate && state.searchInput.isNotBlank()
             issueList.isEnabled = canNavigate
             refresh.isEnabled = !state.writing
-            newIssue.isEnabled = canNavigate && !state.needsSignIn
+            newIssue.text = message(if (editor == null) "action.new" else "action.openDraft")
+            newIssue.isEnabled = editor != null || (canNavigate && !state.needsSignIn)
             moreIssues.isVisible = state.issues.next != null
             moreIssues.isEnabled = !state.listLoading && canNavigate
 
@@ -223,11 +195,108 @@ internal class IssuesPanel(
             }
             listStatus.isVisible = listStatus.text.isNotEmpty()
 
+            val error = state.listError ?: state.detailError?.takeIf { state.selected == null }
+            feedback.syncText(error?.message.orEmpty())
+            feedbackScroll.isVisible = error != null
+        } finally {
+            updating = false
+        }
+    }
+
+    private fun openSelectedIssue(focus: Boolean) {
+        val number = issueList.selectedValue?.number ?: return
+        model.select(number)
+        if (model.state.value.selected == number) showDetails(focus)
+    }
+
+    private fun submitSearch() {
+        val state = model.state.value
+        if (state.searchInput.isBlank() || state.writing || state.editor != null) return
+        model.search()
+        if (model.state.value.selected != null) showDetails(false)
+    }
+
+    private fun renderSignIn(state: IssuesState) {
+        signInLink.text = message(if (state.needsSignIn) "action.signInAgain" else "action.signIn")
+        signInLink.isVisible = contextSignIn || state.needsSignIn
+        signInLink.isEnabled = !state.writing
+    }
+
+    private fun <T> renderer(display: (T?) -> String): ListCellRenderer<T> {
+        val renderer = DefaultListCellRenderer().apply { putClientProperty("html.disable", true) }
+        return ListCellRenderer { list, value, index, selected, focus ->
+            renderer.getListCellRendererComponent(list, display(value), index, selected, focus)
+        }
+    }
+}
+
+internal class IssueDetailsPanel(
+    private val model: IssuesModel,
+    openOnGitHub: (Long) -> Unit,
+) {
+    private val detailCards = CardLayout()
+    private val details = JPanel(detailCards)
+    private val detailPlaceholder = JBLabel()
+    private val detailStatus = JBLabel()
+    private val issueText = textArea(6).apply { isEditable = false }
+    private val moreComments = button("action.more", model::moreComments)
+    private val toggleStatus = button("action.close", model::toggleStatus)
+    private val edit = button("action.edit", model::startEdit)
+    private val browser =
+        ActionLink(message("action.browser")) { model.state.value.issue?.let { openOnGitHub(it.number) } }
+    private val comment = textArea(3).apply {
+        emptyText.text = message("detail.commentInput")
+        accessibleContext.accessibleName = message("detail.commentInput")
+    }
+    private val post = button("action.comment", model::comment)
+    private val editorHeading = JBLabel()
+    private val title = JBTextField()
+    private val description = textArea(5)
+    private val save = button("action.create", model::saveEditor)
+    private val cancel = button("action.cancel", model::cancelEditor)
+    private val feedback = textArea(2).apply { isEditable = false }
+    private val feedbackScroll = JBScrollPane(feedback).apply { isVisible = false }
+
+    val panel = JPanel(BorderLayout(JBUI.scale(6), JBUI.scale(6))).apply { border = JBUI.Borders.empty(12) }
+    val preferredFocus: JTextComponent get() = if (model.state.value.editor == null) issueText else title
+
+    private var updating = false
+    private var renderedDetail: Long? = null
+    private var wasEditing = false
+
+    init {
+        val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
+            add(stack(row(toggleStatus, edit, browser), detailStatus), BorderLayout.NORTH)
+            add(JBScrollPane(issueText), BorderLayout.CENTER)
+            add(stack(row(moreComments), JBScrollPane(comment), row(post)), BorderLayout.SOUTH)
+        }
+        val form = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
+            add(
+                stack(editorHeading, labelFor("editor.title", title), title, labelFor("editor.body", description)),
+                BorderLayout.NORTH,
+            )
+            add(JBScrollPane(description), BorderLayout.CENTER)
+            add(row(save, cancel), BorderLayout.SOUTH)
+        }
+        details.add(detailPlaceholder, "empty")
+        details.add(detail, "issue")
+        details.add(form, "editor")
+        panel.add(details, BorderLayout.CENTER)
+        panel.add(feedbackScroll, BorderLayout.SOUTH)
+
+        comment.onEdit { if (!updating) model.editComment(comment.text) }
+        title.onEdit { if (!updating) updateDraft() }
+        description.onEdit { if (!updating) updateDraft() }
+    }
+
+    fun render(state: IssuesState) {
+        updating = true
+        try {
+            val editor = state.editor
             when {
                 editor != null -> {
                     val (draft, number) = editor
-                    editorHeading.text = number?.let { message("editor.issue", it.toString()) }.orEmpty()
-                    editorHeading.isVisible = number != null
+                    editorHeading.text = number?.let { message("editor.issue", it.toString()) } ?: message("action.new")
                     title.syncText(draft.title)
                     description.syncText(draft.body)
                     title.isEditable = !state.writing
@@ -236,7 +305,7 @@ internal class IssuesPanel(
                     save.isEnabled = !state.writing && !state.needsSignIn && draft.title.isNotBlank()
                     cancel.isEnabled = !state.writing
                     detailCards.show(details, "editor")
-                    if (!wasEditing) title.requestFocusInWindow()
+                    if (!wasEditing && panel.isShowing) title.requestFocusInWindow()
                 }
 
                 state.issue != null -> {
@@ -257,7 +326,7 @@ internal class IssuesPanel(
             }
             wasEditing = editor != null
 
-            val error = state.writeError ?: state.detailError ?: state.listError
+            val error = state.writeError ?: state.detailError
             val status = if (state.writing) message("feedback.writing")
             else listOfNotNull(state.feedback, error?.message).joinToString("\n")
             feedback.syncText(status)
@@ -305,51 +374,38 @@ internal class IssuesPanel(
         post.isEnabled = !state.writing && !state.needsSignIn && state.commentDraft.isNotBlank()
     }
 
-    private fun renderSignIn(state: IssuesState) {
-        signInLink.text = message(if (state.needsSignIn) "action.signInAgain" else "action.signIn")
-        signInLink.isVisible = contextSignIn || state.needsSignIn
-        signInLink.isEnabled = !state.writing
-    }
-
     private fun updateDraft() = model.editDraft(IssueDraft(title.text, description.text))
 
-    private fun JTextComponent.onEdit(onChange: () -> Unit) {
-        document.addDocumentListener(object : DocumentAdapter() {
-            override fun textChanged(e: DocumentEvent) = onChange()
-        })
-    }
-
-    private fun JTextComponent.syncText(value: String) {
-        if (text == value) return
-        val oldPosition = caretPosition
-        text = value
-        caretPosition = oldPosition.coerceAtMost(document.length)
-    }
-
     private fun labelFor(key: String, field: JTextComponent) = JBLabel(message(key)).apply { labelFor = field }
+}
 
-    private fun button(key: String, action: () -> Unit) = JButton(message(key)).apply {
-        addActionListener { action() }
-    }
+private fun JTextComponent.onEdit(onChange: () -> Unit) {
+    document.addDocumentListener(object : DocumentAdapter() {
+        override fun textChanged(e: DocumentEvent) = onChange()
+    })
+}
 
-    private fun textArea(rows: Int) = JBTextArea(rows, 1).apply {
-        lineWrap = true
-        wrapStyleWord = true
-    }
+private fun JTextComponent.syncText(value: String) {
+    if (text == value) return
+    val oldPosition = caretPosition
+    text = value
+    caretPosition = oldPosition.coerceAtMost(document.length)
+}
 
-    private fun stack(vararg components: Component) = JPanel().apply {
-        layout = BoxLayout(this, BoxLayout.Y_AXIS)
-        components.forEach(::add)
-    }
+private fun button(key: String, action: () -> Unit) = JButton(message(key)).apply {
+    addActionListener { action() }
+}
 
-    private fun row(vararg components: Component) = JPanel(FlowLayout(FlowLayout.LEADING, JBUI.scale(4), 0)).apply {
-        components.forEach(::add)
-    }
+private fun textArea(rows: Int) = JBTextArea(rows, 1).apply {
+    lineWrap = true
+    wrapStyleWord = true
+}
 
-    private fun <T> renderer(display: (T?) -> String): ListCellRenderer<T> {
-        val renderer = DefaultListCellRenderer().apply { putClientProperty("html.disable", true) }
-        return ListCellRenderer { list, value, index, selected, focus ->
-            renderer.getListCellRendererComponent(list, display(value), index, selected, focus)
-        }
-    }
+private fun stack(vararg components: Component) = JPanel().apply {
+    layout = BoxLayout(this, BoxLayout.Y_AXIS)
+    components.forEach(::add)
+}
+
+private fun row(vararg components: Component) = JPanel(FlowLayout(FlowLayout.LEADING, JBUI.scale(4), 0)).apply {
+    components.forEach(::add)
 }
