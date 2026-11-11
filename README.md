@@ -14,8 +14,10 @@ Unterstützt wird IntelliJ IDEA **2026.3** (Build-Reihe `263.*`).
 3. Ein Git-Projekt mit einem GitHub.com-Remote öffnen. Unter **View → Tool Windows → GitHub Issues** das Fenster öffnen.
 4. Bei mehreren Repositories oder Konten die passende Auswahl treffen. **Sign In to GitHub** öffnet bei Bedarf den
    Anmeldedialog von IDEA.
-5. Mit **Open**, **Closed** und **All** filtern. Über **Search** oder Enter in Titel und Beschreibung suchen; der
-   Statusfilter gilt weiter. **Load More** lädt weitere Treffer. Das Suchfeld leeren, um zur normalen Liste
+5. Mit **Open**, **Closed** und **All** filtern. Die Chips **Label** und **Assignee** schränken die Liste auf ein Label
+   des Repositorys oder eine zugewiesene Person ein; **Assigned to me** steht für das aktive GitHub-Konto. Jeder Chip
+   lässt sich über sein ✕ einzeln zurücksetzen. Über **Search** oder Enter in Titel und Beschreibung suchen; Status-,
+   Label- und Zuständigkeitsfilter gelten weiter. **Load More** lädt weitere Treffer. Das Suchfeld leeren, um zur normalen Liste
    zurückzukehren.
    Mit `#42` und Enter das Issue 42 direkt öffnen, auch wenn es geschlossen ist oder noch nicht in der Liste steht.
 6. Ein Issue in der linken Liste auswählen, um Details und Kommentare im Editor-Tab **GitHub Issue** zu öffnen.

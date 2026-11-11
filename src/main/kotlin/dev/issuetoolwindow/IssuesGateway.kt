@@ -40,6 +40,13 @@ internal enum class IssueSort(val messageKey: String, val apiSort: String, val a
     val apiDirection: String get() = if (ascending) "asc" else "desc"
 }
 
+/** Label and assignee restrictions of the issue list; `null` means no restriction. */
+internal data class IssueCriteria(val label: String? = null, val assignee: String? = null) {
+    fun includes(issue: Issue): Boolean =
+        (label == null || issue.labels.any { it.equals(label, ignoreCase = true) }) &&
+            (assignee == null || issue.assignees.any { it.equals(assignee, ignoreCase = true) })
+}
+
 internal data class Issue(
     val number: Long,
     val title: String,
@@ -91,8 +98,14 @@ internal data class PullRequestActivity(
 internal data class Page<T>(val items: List<T>, val next: String?)
 
 internal interface IssuesGateway {
-    suspend fun issues(filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue>
-    suspend fun search(query: String, filter: IssueFilter, sort: IssueSort, next: String?): Page<Issue>
+    suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?): Page<Issue>
+    suspend fun search(
+        query: String,
+        filter: IssueFilter,
+        sort: IssueSort,
+        criteria: IssueCriteria,
+        next: String?,
+    ): Page<Issue>
     suspend fun issue(number: Long): Issue
     suspend fun activity(number: Long, next: String?): Page<IssueActivity>
     suspend fun create(title: String, body: String?): Issue
