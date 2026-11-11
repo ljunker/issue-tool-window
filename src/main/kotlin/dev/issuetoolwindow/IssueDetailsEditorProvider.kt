@@ -17,9 +17,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.beans.PropertyChangeListener
 import javax.swing.JComponent
+import kotlin.time.Duration.Companion.seconds
 
 internal class IssueDetailsFile(
     val model: IssuesModel,
@@ -46,6 +48,17 @@ private class IssueDetailsEditor(private val issueFile: IssueDetailsFile) : User
     init {
         view.render(issueFile.model.state.value)
         scope.launch { issueFile.model.state.collect(view::render) }
+        // Comments and changes made elsewhere appear while the tab is visible, without reopening the issue.
+        scope.launch {
+            while (true) {
+                delay(POLL_INTERVAL)
+                if (view.panel.isShowing) issueFile.model.pollDetail()
+            }
+        }
+    }
+
+    private companion object {
+        val POLL_INTERVAL = 30.seconds
     }
 
     override fun getComponent(): JComponent = view.panel
