@@ -19,8 +19,12 @@ internal data class IssueDetailsContent(
     val showEmptyActivity: Boolean,
 ) {
     fun toHtml(): String = buildString {
-        val status = message(if (issue.open) "filter.open" else "filter.closed")
-        val statusClass = if (issue.open) "issue-open" else "issue-closed"
+        val status = message("status.${issue.stateSuffix}")
+        val statusClass = when {
+            issue.open -> "issue-open"
+            issue.closeReason == CloseReason.COMPLETED || issue.closeReason == null -> "issue-closed"
+            else -> "issue-not-planned"
+        }
         append("<h1 class='issue-title'>${escapeXmlEntities(issue.title)} ")
         append("<span class='issue-number'>#${issue.number}</span></h1>")
         append("<p class='issue-state'><span class='$statusClass'>&nbsp;&nbsp;${escapeXmlEntities(status)}&nbsp;&nbsp;</span></p>")
@@ -143,6 +147,7 @@ internal fun issueDetailsStyleSheet(light: Boolean): StyleSheet {
     val labelBackground = color("#ddf4ff", "#132c48")
     val open = color("#1a7f37", "#23773a")
     val closed = color("#8250df", "#7546c8")
+    val notPlanned = color("#59636e", "#656c76")
 
     return StyleSheetUtil.loadStyleSheet(
         """
@@ -150,9 +155,10 @@ internal fun issueDetailsStyleSheet(light: Boolean): StyleSheet {
         h1.issue-title { color: $foreground; font-size: 200%; font-weight: normal; margin: 0 0 12px 0; }
         span.issue-number { color: $muted; }
         p.issue-state { margin: 0 0 12px 0; }
-        span.issue-open, span.issue-closed { color: #ffffff; font-weight: bold; border-radius: 10px; }
+        span.issue-open, span.issue-closed, span.issue-not-planned { color: #ffffff; font-weight: bold; border-radius: 10px; }
         span.issue-open { background-color: $open; }
         span.issue-closed { background-color: $closed; }
+        span.issue-not-planned { background-color: $notPlanned; }
         p.issue-metadata { margin: 0 0 6px 0; }
         .issue-muted, span.issue-time { color: $muted; }
         span.issue-label { color: $link; background-color: $labelBackground; border-radius: 6px; }

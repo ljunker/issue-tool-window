@@ -40,7 +40,8 @@ Bei Bedarf IDEA anschließend neu starten.
 
 ### Issues finden
 
-- Mit **Open**, **Closed** und **All** nach Status filtern.
+- Mit **Open**, **Closed** und **All** nach Status filtern. Geschlossene Issues zeigen ihren Grund: `CLOSED` für
+  erledigte, `NOT PLANNED` für bewusst nicht umgesetzte und `DUPLICATE` für Duplikate.
 - Die Chips **Label** und **Assignee** schränken die Liste auf ein Label des Repositorys oder eine zugewiesene Person
   ein; **Assigned to me** steht für das aktive GitHub-Konto. Jeder Chip lässt sich über sein ✕ einzeln zurücksetzen.
 - Über **Search** oder Enter in Titel und Beschreibung suchen. Status-, Label- und Zuständigkeitsfilter gelten
@@ -65,7 +66,7 @@ Browser.
 | **Edit Assignees**                         | Zeigt alle zuweisbaren Personen mit Filterfeld. **Save Assignees** ändert jede Person einzeln, parallele Änderungen auf GitHub bleiben erhalten. |
 | **Assign Me**                              | Weist das aktive Konto direkt zu, sofern es zuweisbar ist.                                                                              |
 | **Post Comment**                           | Fügt einen Kommentar hinzu.                                                                                                             |
-| **Close Issue** / **Reopen Issue**         | Schließt das Issue bzw. öffnet es wieder.                                                                                               |
+| **Close Issue** / **Reopen Issue**         | Schließt das Issue als erledigt bzw. öffnet es wieder. Das Ausklappmenü bietet **Close as Completed** und **Close as Not Planned**.      |
 
 Nach dem Speichern von Assignees zeigt der Tab die von GitHub gespeicherten Zuständigkeiten und nennt abgelehnte oder
 ignorierte Änderungen.

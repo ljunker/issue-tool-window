@@ -79,12 +79,13 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
             )
         ).toComment()
 
-    override suspend fun setOpen(number: Long, open: Boolean): Issue =
-        request(
-            GithubApiRequest.Patch.Json(
-                "$issuesUrl/$number", mapOf("state" to if (open) "open" else "closed"), RestIssue::class.java,
-            )
-        ).toIssue()
+    override suspend fun close(number: Long, reason: CloseReason): Issue =
+        changeState(number, mapOf("state" to "closed", "state_reason" to reason.apiValue))
+
+    override suspend fun reopen(number: Long): Issue = changeState(number, mapOf("state" to "open"))
+
+    private suspend fun changeState(number: Long, fields: Map<String, String>): Issue =
+        request(GithubApiRequest.Patch.Json("$issuesUrl/$number", fields, RestIssue::class.java)).toIssue()
 
     override suspend fun labels(): List<String> =
         allPages(labelsUrl) { url ->
@@ -281,11 +282,16 @@ internal data class RestIssue(
     val pullRequest: Map<String, Any?>? = null,
     val createdAt: String? = null,
     val comments: Int = 0,
+    val stateReason: String? = null,
 ) {
-    fun toIssue(): Issue = Issue(
-        number, title, state == "open", user?.login, body.orEmpty(), labels.map { it.name }, assignees.map { it.login },
-        createdAt, comments, labels.mapNotNull { label -> label.color?.let { label.name to it } }.toMap(),
-    )
+    fun toIssue(): Issue {
+        val open = state == "open"
+        return Issue(
+            number, title, open, user?.login, body.orEmpty(), labels.map { it.name }, assignees.map { it.login },
+            createdAt, comments, labels.mapNotNull { label -> label.color?.let { label.name to it } }.toMap(),
+            closeReason = if (open) null else CloseReason.fromApi(stateReason),
+        )
+    }
 }
 
 internal data class RestUser(val login: String)

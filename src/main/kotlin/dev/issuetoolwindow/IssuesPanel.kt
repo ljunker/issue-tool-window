@@ -19,6 +19,7 @@ import com.intellij.ui.components.JBHtmlPane
 import com.intellij.ui.components.JBHtmlPaneConfiguration
 import com.intellij.ui.components.JBHtmlPaneStyleConfiguration
 import com.intellij.ui.components.JBLabel
+import com.intellij.ui.components.JBOptionButton
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
@@ -42,6 +43,7 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.net.URI
 import javax.swing.AbstractAction
+import javax.swing.Action
 import javax.swing.BoxLayout
 import javax.swing.DefaultListModel
 import javax.swing.JButton
@@ -318,7 +320,13 @@ internal class IssueDetailsPanel(
     }
     private val issueScroll = JBScrollPane(issueText).apply { border = JBUI.Borders.empty() }
     private val moreActivity = button("action.more", model::moreActivity)
-    private val toggleStatus = button("action.close", model::toggleStatus)
+    private val close = action("action.close") { model.close(CloseReason.COMPLETED) }
+    private val closeOptions = arrayOf<Action>(
+        action("action.closeCompleted") { model.close(CloseReason.COMPLETED) },
+        action("action.closeNotPlanned") { model.close(CloseReason.NOT_PLANNED) },
+    )
+    private val reopen = action("action.reopen", model::reopen)
+    private val status = JBOptionButton(close, closeOptions)
     private val edit = button("action.edit", model::startEdit)
     private val editLabels = button("action.labels", model::startLabels)
     private val editAssignees = button("action.assignees", model::startAssignees)
@@ -372,7 +380,7 @@ internal class IssueDetailsPanel(
             border = JBUI.Borders.empty(0, 20)
         }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(stack(row(toggleStatus, edit, editLabels, editAssignees, branch, browser), detailStatus), BorderLayout.NORTH)
+            add(stack(row(status, edit, editLabels, editAssignees, branch, browser), detailStatus), BorderLayout.NORTH)
             add(issueScroll, BorderLayout.CENTER)
             add(composer, BorderLayout.SOUTH)
         }
@@ -485,8 +493,14 @@ internal class IssueDetailsPanel(
         detailStatus.isVisible = state.detailLoading
         moreActivity.isVisible = state.activity.next != null
         moreActivity.isEnabled = !state.detailLoading && !state.writing
-        toggleStatus.text = message(if (issue.open) "action.close" else "action.reopen")
-        toggleStatus.isEnabled = !state.writing && !state.needsSignIn
+        val canChangeStatus = !state.writing && !state.needsSignIn
+        (closeOptions + close + reopen).forEach { it.isEnabled = canChangeStatus }
+        // Closing offers a reason like GitHub; reopening has none.
+        val statusAction = if (issue.open) close else reopen
+        if (status.action !== statusAction) {
+            status.action = statusAction
+            status.options = if (issue.open) closeOptions else null
+        }
         edit.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editLabels.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editAssignees.isEnabled = editLabels.isEnabled
@@ -550,6 +564,10 @@ private fun JTextComponent.syncText(value: String) {
 
 private fun button(key: String, action: () -> Unit) = JButton(message(key)).apply {
     addActionListener { action() }
+}
+
+private fun action(key: String, perform: () -> Unit): Action = object : AbstractAction(message(key)) {
+    override fun actionPerformed(e: ActionEvent) = perform()
 }
 
 private fun textArea(rows: Int) = JBTextArea(rows, 1).apply {
