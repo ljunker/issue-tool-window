@@ -1,8 +1,12 @@
 package dev.issuetoolwindow
 
+import com.intellij.ide.BrowserUtil
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.util.Disposer
 import com.intellij.ui.DocumentAdapter
 import com.intellij.ui.components.ActionLink
+import com.intellij.ui.components.JBHtmlPane
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
@@ -31,6 +35,7 @@ import javax.swing.KeyStroke
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
 import javax.swing.event.DocumentEvent
+import javax.swing.event.HyperlinkEvent
 import javax.swing.text.JTextComponent
 
 internal class IssuesPanel(
@@ -233,12 +238,21 @@ internal class IssuesPanel(
 internal class IssueDetailsPanel(
     private val model: IssuesModel,
     openOnGitHub: (Long) -> Unit,
+    parent: Disposable,
 ) {
     private val detailCards = CardLayout()
     private val details = JPanel(detailCards)
     private val detailPlaceholder = JBLabel()
     private val detailStatus = JBLabel()
-    private val issueText = textArea(6).apply { isEditable = false }
+    private val issueText = JBHtmlPane().apply {
+        Disposer.register(parent, this)
+        accessibleContext.accessibleName = message("detail.tab")
+        addHyperlinkListener { event ->
+            if (event.eventType == HyperlinkEvent.EventType.ACTIVATED) {
+                event.description?.let(IssueMarkdown::browserUri)?.let(BrowserUtil::browse)
+            }
+        }
+    }
     private val moreComments = button("action.more", model::moreComments)
     private val toggleStatus = button("action.close", model::toggleStatus)
     private val edit = button("action.edit", model::startEdit)
@@ -261,7 +275,7 @@ internal class IssueDetailsPanel(
     val preferredFocus: JTextComponent get() = if (model.state.value.editor == null) issueText else title
 
     private var updating = false
-    private var renderedDetail: Long? = null
+    private var renderedContent: IssueDetailsContent? = null
     private var wasEditing = false
 
     init {
@@ -314,6 +328,7 @@ internal class IssueDetailsPanel(
                 }
 
                 else -> {
+                    renderedContent = null
                     detailPlaceholder.text = message(
                         when {
                             state.detailLoading -> "detail.loading"
@@ -337,30 +352,16 @@ internal class IssueDetailsPanel(
     }
 
     private fun renderIssue(state: IssuesState, issue: Issue) {
-        val content = buildString {
-            appendLine(message("detail.title", issue.number.toString(), issue.title))
-            appendLine(message("detail.status", message(if (issue.open) "filter.open" else "filter.closed")))
-            appendLine(message("detail.author", issue.author ?: message("detail.unknown")))
-            appendLine(message("detail.labels", issue.labels.joinToString().ifEmpty { message("detail.none") }))
-            appendLine(message("detail.assignees", issue.assignees.joinToString().ifEmpty { message("detail.none") }))
-            appendLine()
-            appendLine(issue.body.ifBlank { message("detail.noDescription") })
-            appendLine()
-            appendLine(message("detail.comments"))
-            if (state.comments.items.isEmpty() && !state.detailLoading && state.detailError == null) {
-                appendLine(message("detail.noComments"))
-            }
-            for (entry in state.comments.items) {
-                appendLine()
-                val author = entry.author ?: message("detail.unknown")
-                appendLine(entry.createdAt?.let { message("detail.commentAuthor", author, it) } ?: author)
-                appendLine(entry.body)
-            }
-        }
-        issueText.syncText(content)
-        if (renderedDetail != issue.number) {
-            issueText.caretPosition = 0
-            renderedDetail = issue.number
+        val content = IssueDetailsContent(
+            issue,
+            state.comments.items,
+            showEmptyComments = state.comments.items.isEmpty() && !state.detailLoading && state.detailError == null,
+        )
+        if (renderedContent != content) {
+            val position = issueText.caretPosition.takeIf { renderedContent?.issue?.number == issue.number } ?: 0
+            issueText.text = content.toHtml()
+            issueText.caretPosition = position.coerceAtMost(issueText.document.length)
+            renderedContent = content
         }
         detailStatus.text = message("detail.loading")
         detailStatus.isVisible = state.detailLoading

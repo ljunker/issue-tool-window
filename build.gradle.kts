@@ -21,6 +21,10 @@ dependencies {
         bundledPlugin("org.jetbrains.plugins.github")
         pluginVerifier()
     }
+    val commonmarkVersion = "0.32.0"
+    implementation("org.commonmark:commonmark:$commonmarkVersion")
+    implementation("org.commonmark:commonmark-ext-autolink:$commonmarkVersion")
+    implementation("org.commonmark:commonmark-ext-task-list-items:$commonmarkVersion")
     testImplementation(kotlin("test-junit"))
 }
 
