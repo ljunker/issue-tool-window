@@ -86,6 +86,12 @@ internal interface IssuesGateway {
     suspend fun updateIssue(number: Long, title: String, body: String): Issue
     suspend fun addComment(number: Long, body: String): Comment
     suspend fun setOpen(number: Long, open: Boolean): Issue
+
+    /** All label names of the repository, across every result page. */
+    suspend fun labels(): List<String>
+
+    /** Adds and removes only the given labels and returns the issue as GitHub stores it afterwards. */
+    suspend fun changeLabels(number: Long, add: Collection<String>, remove: Collection<String>): Issue
 }
 
 internal class IssuesFailure(message: String, val offerSignIn: Boolean = false) : Exception(message)

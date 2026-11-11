@@ -454,6 +454,132 @@ class IssuesTest {
         assertEquals(listOf(repoB.issue), model.state.value.issues.items)
     }
 
+    @Test
+    fun `label pages are combined, loops are rejected and label names stay one path segment`() = runBlocking {
+        val calls = mutableListOf<String>()
+        val labels = allPages("page1") { url ->
+            calls += url
+            if (url == "page1") Page(listOf("bug"), "page2") else Page(listOf("docs"), null)
+        }
+        assertEquals(listOf("bug", "docs"), labels)
+        assertEquals(listOf("page1", "page2"), calls)
+        val loop = runCatching { allPages("page1") { Page(listOf("bug"), "page1") } }.exceptionOrNull()
+        assertTrue(loop is IssuesFailure)
+
+        assertEquals(
+            "https://api.github.com/repos/owner/project/issues/4/labels/good%20first%20issue%2Fui%C3%A4",
+            issueLabelUrl(Repository("owner", "project"), 4, "good first issue/uiä"),
+        )
+        val page = GithubApiRequest.Get.JsonPage("https://api.github.com/example", RestLabel::class.java)
+            .extractResult(response("""[{"name":"bug","color":"d73a4a"}]""", "page2"))
+        assertEquals(listOf("bug"), page.items.map(RestLabel::name))
+        assertEquals("page2", page.nextLink)
+    }
+
+    @Test
+    fun `label picker filters repository labels and keeps labels missing from the repository`() {
+        val picker = LabelPicker(4, setOf("legacy", "bug"), setOf("legacy", "bug"), listOf("bug", "Docs", "ui"))
+        assertEquals(listOf("bug", "Docs", "ui", "legacy"), picker.visible)
+        assertEquals(listOf("Docs"), picker.copy(query = " doc ").visible)
+        val changed = picker.copy(selected = setOf("bug", "ui"))
+        assertEquals(listOf("ui"), changed.added)
+        assertEquals(listOf("legacy"), changed.removed)
+        assertTrue(changed.changed)
+        assertFalse(picker.changed)
+    }
+
+    @Test
+    fun `saving labels sends only the selected changes and shows the labels stored on GitHub`() = runBlocking {
+        val initial = Issue(4, "Issue", true, null, "", listOf("bug", "triage"), emptyList())
+        val changes = mutableListOf<Pair<Collection<String>, Collection<String>>>()
+        val gateway = object : StubGateway(initial) {
+            override suspend fun labels() = listOf("bug", "docs", "triage", "ui")
+
+            override suspend fun changeLabels(number: Long, add: Collection<String>, remove: Collection<String>): Issue {
+                assertEquals(initial.number, number)
+                changes += add to remove
+                // Someone else added "external" on GitHub meanwhile; it must stay.
+                issue = issue.copy(labels = (issue.labels - remove.toSet() + add + "external").distinct())
+                return issue
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+
+        model.startLabels()
+        await { model.state.value.labelPicker?.loading == false }
+        assertEquals(listOf("bug", "docs", "triage", "ui"), model.state.value.labelPicker?.available)
+        model.toggleLabel("docs")
+        model.toggleLabel("ui")
+        model.toggleLabel("triage")
+        model.toggleLabel("ui")
+        model.saveLabels()
+        await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
+
+        assertEquals(listOf<Pair<Collection<String>, Collection<String>>>(listOf("docs") to listOf("triage")), changes)
+        assertNull(model.state.value.labelPicker)
+        assertNull(model.state.value.writeError)
+        assertEquals(listOf("bug", "docs", "external"), model.state.value.issue?.labels)
+        assertEquals(listOf(gateway.issue), model.state.value.issues.items)
+        assertEquals("Updated labels of issue #4.", model.state.value.feedback)
+    }
+
+    @Test
+    fun `a partly failed label save closes the picker and shows the labels stored on GitHub`() = runBlocking {
+        val initial = Issue(4, "Issue", true, null, "", listOf("bug", "docs"), emptyList())
+        val gateway = object : StubGateway(initial) {
+            override suspend fun labels(): List<String> = throw IssuesFailure("No labels")
+
+            override suspend fun changeLabels(number: Long, add: Collection<String>, remove: Collection<String>): Issue {
+                // The first removal reached GitHub before the second one failed.
+                issue = issue.copy(labels = listOf("docs"))
+                throw IssuesFailure("Save failed")
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+
+        model.startLabels()
+        await { model.state.value.labelPicker?.loading == false }
+        assertEquals("No labels", model.state.value.labelPicker?.error?.message)
+        assertEquals(listOf("bug", "docs"), model.state.value.labelPicker?.visible)
+        model.toggleLabel("bug")
+        model.toggleLabel("docs")
+        model.saveLabels()
+        await { !model.state.value.writing && !model.state.value.detailLoading }
+        assertEquals("Save failed", model.state.value.writeError?.message)
+        assertNull(model.state.value.labelPicker)
+        assertEquals(listOf("docs"), model.state.value.issue?.labels)
+    }
+
+    @Test
+    fun `label changes that GitHub ignores are reported`() = runBlocking {
+        val initial = Issue(4, "Issue", true, null, "", listOf("bug"), emptyList())
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(initial) {
+            override suspend fun labels() = listOf("bug", "docs")
+            override suspend fun changeLabels(number: Long, add: Collection<String>, remove: Collection<String>) = issue
+        })
+        await { !model.state.value.listLoading }
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+        model.startLabels()
+        await { model.state.value.labelPicker?.loading == false }
+        model.toggleLabel("bug")
+        model.toggleLabel("docs")
+        model.saveLabels()
+        await { !model.state.value.writing && !model.state.value.detailLoading }
+        assertNull(model.state.value.feedback)
+        assertTrue(model.state.value.writeError?.message.orEmpty().contains("(docs, bug)"))
+        assertEquals(initial, model.state.value.issue)
+    }
+
     private suspend fun await(condition: () -> Boolean) {
         withTimeout(3_000) { while (!condition()) yield() }
     }
@@ -471,6 +597,9 @@ class IssuesTest {
         override suspend fun updateIssue(number: Long, title: String, body: String): Issue = error("Unexpected edit")
         override suspend fun addComment(number: Long, body: String): Comment = error("Unexpected comment")
         override suspend fun setOpen(number: Long, open: Boolean): Issue = error("Unexpected state change")
+        override suspend fun labels(): List<String> = error("Unexpected label list")
+        override suspend fun changeLabels(number: Long, add: Collection<String>, remove: Collection<String>): Issue =
+            error("Unexpected label change")
     }
 
     private fun response(json: String, next: String? = null): GithubApiResponse = object : GithubApiResponse {
