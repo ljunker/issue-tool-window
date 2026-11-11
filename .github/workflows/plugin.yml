@@ -1,0 +1,76 @@
+name: Plugin CI and beta release
+
+on:
+  pull_request:
+  push:
+    tags:
+      - 'v*-beta.*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Test and build plugin
+    if: github.event_name == 'pull_request' || !github.event.deleted
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Validate beta tag
+        if: github.ref_type == 'tag'
+        id: beta
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-beta\.(0|[1-9][0-9]*)$ ]]; then
+            echo 'Expected a beta tag in the format vMAJOR.MINOR.PATCH-beta.NUMBER.' >&2
+            exit 1
+          fi
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Test and build pull request
+        if: github.event_name == 'pull_request'
+        run: ./gradlew --no-daemon test buildPlugin
+
+      - name: Test, build and verify beta
+        if: github.ref_type == 'tag'
+        env:
+          PLUGIN_VERSION: ${{ steps.beta.outputs.version }}
+        run: ./gradlew --no-daemon test buildPlugin verifyPlugin -PpluginVersion="$PLUGIN_VERSION"
+
+      - name: Save verified plugin ZIP
+        if: github.ref_type == 'tag'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: verified-plugin
+          path: build/distributions/issue-tool-window-${{ steps.beta.outputs.version }}.zip
+          if-no-files-found: error
+          overwrite: true
+
+  release:
+    name: Publish beta prerelease
+    if: github.ref_type == 'tag'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: verified-plugin
+          path: release-assets
+
+      - name: Create GitHub prerelease with verified ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "release-assets/issue-tool-window-${GITHUB_REF_NAME#v}.zip" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --prerelease --generate-notes

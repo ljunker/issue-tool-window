@@ -4,7 +4,7 @@ plugins {
 }
 
 group = "dev.issuetoolwindow"
-version = "0.1.0"
+version = providers.gradleProperty("pluginVersion").getOrElse("0.1.0")
 
 val ideaVersion = "2026.3"
 val localIdea = providers.gradleProperty("ideaLocalPath")
