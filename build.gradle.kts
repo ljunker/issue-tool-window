@@ -18,6 +18,8 @@ dependencies {
     intellijPlatform {
         if (localIdea.isPresent) local(localIdea.get()) else intellijIdea(ideaVersion)
         bundledPlugin("Git4Idea")
+        // GitRepository erweitert com.intellij.dvcs.repo.Repository aus diesem Plugin.
+        bundledPlugin("com.intellij.platform.vcs")
         bundledPlugin("org.jetbrains.plugins.github")
         pluginVerifier()
     }

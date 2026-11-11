@@ -15,6 +15,7 @@ import com.intellij.openapi.fileEditor.FileEditorOpenRequest
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.content.Content
@@ -23,6 +24,8 @@ import com.intellij.util.IconUtil
 import com.intellij.util.ui.ImageUtil
 import com.intellij.util.ui.JBUI
 import dev.issuetoolwindow.IssuesBundle.message
+import git4idea.branch.GitBrancher
+import git4idea.repo.GitRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -60,7 +63,7 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
     private val model = IssuesModel(scope)
     private val editorManager = FileEditorManager.getInstance(project)
     private val properties = PropertiesComponent.getInstance(project)
-    private val detailsFile = IssueDetailsFile(model, ::openOnGitHub)
+    private val detailsFile = IssueDetailsFile(model, ::openOnGitHub, ::createBranch)
     private val selector = RepositorySelectorPanel(::chooseRepository, ::chooseAccount, ::viewIssues, ::signIn)
     private val list = IssuesPanel(model, scope, ::signIn, ::showDetails)
     private val cards = CardLayout()
@@ -73,6 +76,8 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
     private var openDetailsJob: Job? = null
     private var repositories = emptyList<Repository>()
     private var remoteNames = emptyMap<String, String>()
+    /** Local Git roots with a remote of each repository, keyed by the lowercase full name. */
+    private var gitRoots = emptyMap<String, List<GitRepository>>()
     private var accounts = emptyList<GithubAccount>()
     private var repository: Repository? = null
     private var account: GithubAccount? = null
@@ -88,6 +93,7 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
             val remotes = project.service<GHHostedRepositoriesManager>().knownRepositoriesState
             combine(remotes, GHAccountsUtil.accountsState) { mappings, savedAccounts ->
                 val names = mutableMapOf<String, String>()
+                val roots = mutableMapOf<String, MutableSet<GitRepository>>()
                 val candidates = mappings.mapNotNull { mapping ->
                     val remote = mapping.repository
                     if (!remote.serverPath.isGithubDotCom) return@mapNotNull null
@@ -95,16 +101,19 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
                     val key = repo.fullName.lowercase()
                     val remoteName = mapping.remote.remote.name
                     if (names[key] == null || remoteName == "origin") names[key] = remoteName
+                    roots.getOrPut(key) { linkedSetOf() } += mapping.gitRepository
                     repo
                 }
-                Triple(
+                RemoteContext(
                     repositoriesForPicker(candidates),
                     names.toMap(),
+                    roots.mapValues { (_, found) -> found.sortedBy { it.root.path } },
                     savedAccounts.filter { it.server.isGithubDotCom }.sortedBy { it.name.lowercase() },
                 )
-            }.collect { (repos, names, savedAccounts) ->
+            }.collect { (repos, names, roots, savedAccounts) ->
                 repositories = repos
                 remoteNames = names
+                gitRoots = roots
                 accounts = savedAccounts
                 if (!contextLoaded) restoreSelection()
                 contextLoaded = true
@@ -259,6 +268,20 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
         BrowserUtil.browse(URI("https", "github.com", "/${repo.fullName}/issues/$number", null).toASCIIString())
     }
 
+    /** Creates a local branch for [issue] from the current HEAD and checks it out; never pushes. */
+    private fun createBranch(issue: Issue) {
+        val repo = connectedTo?.first ?: return
+        val roots = gitRoots[repo.fullName.lowercase()].orEmpty()
+        if (roots.isEmpty()) {
+            Messages.showErrorDialog(project, message("branch.noRoot", repo.fullName), message("action.branch"))
+            return
+        }
+        val dialog = CreateIssueBranchDialog(project, issue, roots)
+        if (!dialog.showAndGet()) return
+        // Like "git checkout -b": starts at HEAD, keeps local changes and reports failures as IDE notifications.
+        GitBrancher.getInstance(project).checkoutNewBranch(dialog.branchName, listOf(dialog.root))
+    }
+
     override fun dispose() {
         scope.cancel()
         if (!project.isDisposed) closeDetails()
@@ -301,6 +324,13 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
 
         override fun actionPerformed(e: AnActionEvent) = changeRepository()
     }
+
+    private data class RemoteContext(
+        val repositories: List<Repository>,
+        val remoteNames: Map<String, String>,
+        val gitRoots: Map<String, List<GitRepository>>,
+        val accounts: List<GithubAccount>,
+    )
 
     private companion object {
         const val SELECT_CARD = "select"
