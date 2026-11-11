@@ -17,9 +17,10 @@ Unterstützt wird IntelliJ IDEA **2026.3** (Build-Reihe `263.*`).
    Statusfilter gilt weiter. **Load More** lädt weitere Treffer. Das Suchfeld leeren, um zur normalen Liste
    zurückzukehren.
    Mit `#42` und Enter das Issue 42 direkt öffnen, auch wenn es geschlossen ist oder noch nicht in der Liste steht.
-6. Ein Issue auswählen, um Details und Kommentare zu sehen. **New Issue**
-   legt ein Issue an. **Edit Issue** öffnet den Titel und den Markdown-Quelltext der Beschreibung zur Bearbeitung.
-   In den Details stehen auch **Post Comment**, **Close Issue** und **Reopen Issue** zur Verfügung.
+6. Ein Issue in der linken Liste auswählen, um Details und Kommentare im Editor-Tab **GitHub Issue** zu öffnen.
+   **New Issue** öffnet dort das Formular für ein neues Issue. **Edit Issue** öffnet den Titel und den
+   Markdown-Quelltext der Beschreibung zur Bearbeitung. Im Tab stehen auch **Post Comment**, **Close Issue**
+   und **Reopen Issue** zur Verfügung.
 
 ## Build und Abnahme
 
