@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub-Issue umsetzen"
+  short_description: "Issue umsetzen und PR nach Freigabe mergen"
+  default_prompt: "Nutze $github-issue-umsetzen für ein geeignetes Issue im aktuellen Repository."
