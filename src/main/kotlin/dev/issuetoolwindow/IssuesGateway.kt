@@ -151,7 +151,16 @@ internal interface IssuesGateway {
     ): Page<Issue>
     suspend fun issue(number: Long): Issue
     suspend fun activity(number: Long, next: String?): Page<IssueActivity>
-    suspend fun create(title: String, body: String?): Issue
+    /** Creates an issue; empty [labels] and [assignees] are left out of the request. */
+    suspend fun create(
+        title: String,
+        body: String?,
+        labels: List<String> = emptyList(),
+        assignees: List<String> = emptyList(),
+    ): Issue
+
+    /** Markdown templates of [ISSUE_TEMPLATE_DIRECTORY] ordered by file name; empty when the repository has none. */
+    suspend fun issueTemplates(): List<IssueTemplate>
     suspend fun updateIssue(number: Long, title: String, body: String): Issue
     suspend fun addComment(number: Long, body: String): Comment
 

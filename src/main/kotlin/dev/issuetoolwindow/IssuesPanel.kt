@@ -352,6 +352,10 @@ internal class IssueDetailsPanel(
     private val editorHeading = JBLabel()
     private val title = JBTextField()
     private val description = textArea(5)
+    private val labels = JBTextField().apply { emptyText.text = message("editor.namesHint") }
+    private val assignees = JBTextField().apply { emptyText.text = message("editor.namesHint") }
+    private val labelsLabel = labelFor("editor.labels", labels)
+    private val assigneesLabel = labelFor("editor.assignees", assignees)
     private val save = button("action.create", model::saveEditor)
     private val cancel = button("action.cancel", model::cancelEditor)
     private val pickerHeading = JBLabel().apply { font = font.deriveFont(Font.BOLD) }
@@ -406,7 +410,7 @@ internal class IssueDetailsPanel(
                 BorderLayout.NORTH,
             )
             add(JBScrollPane(description), BorderLayout.CENTER)
-            add(row(save, cancel), BorderLayout.SOUTH)
+            add(stack(labelsLabel, labels, assigneesLabel, assignees, row(save, cancel)), BorderLayout.SOUTH)
         }
         details.add(detailPlaceholder, "empty")
         details.add(detail, "issue")
@@ -434,6 +438,8 @@ internal class IssueDetailsPanel(
         commentEditorText.onEdit { if (!updating) model.editCommentEditor(commentEditorText.text) }
         title.onEdit { if (!updating) updateDraft() }
         description.onEdit { if (!updating) updateDraft() }
+        labels.onEdit { if (!updating) updateDraft() }
+        assignees.onEdit { if (!updating) updateDraft() }
         pickerSearch.onEdit { if (!updating) model.searchPicker(pickerSearch.text) }
         pickerList.setCheckBoxListListener { index, _ ->
             if (!updating) pickerList.getItemAt(index)?.let(model::togglePicked)
@@ -450,8 +456,15 @@ internal class IssueDetailsPanel(
                     editorHeading.text = number?.let { message("editor.issue", it.toString()) } ?: message("action.new")
                     title.syncText(draft.title)
                     description.syncText(draft.body)
+                    labels.syncNames(draft.labels)
+                    assignees.syncNames(draft.assignees)
+                    // Existing issues change labels and assignees with their pickers.
+                    val creating = number == null
+                    for (field in listOf(labelsLabel, labels, assigneesLabel, assignees)) field.isVisible = creating
                     title.isEditable = !state.writing
                     description.isEditable = !state.writing
+                    labels.isEditable = !state.writing
+                    assignees.isEditable = !state.writing
                     save.text = message(if (number == null) "action.create" else "action.save")
                     save.isEnabled = !state.writing && !state.needsSignIn && draft.title.isNotBlank()
                     cancel.isEnabled = !state.writing
@@ -606,7 +619,9 @@ internal class IssueDetailsPanel(
         }
     }
 
-    private fun updateDraft() = model.editDraft(IssueDraft(title.text, description.text))
+    private fun updateDraft() = model.editDraft(
+        IssueDraft(title.text, description.text, splitNames(labels.text), splitNames(assignees.text))
+    )
 
     private fun runCommentAction(action: CommentAction, commentId: String) {
         when (action) {
@@ -667,6 +682,11 @@ private fun JTextComponent.syncText(value: String) {
     val oldPosition = caretPosition
     text = value
     caretPosition = oldPosition.coerceAtMost(document.length)
+}
+
+/** Shows [names] comma-separated, unless the typed text already means the same, e.g. while a name is being typed. */
+private fun JTextComponent.syncNames(names: List<String>) {
+    if (splitNames(text) != names) syncText(names.joinToString(", "))
 }
 
 private fun button(key: String, action: () -> Unit) = JButton(message(key)).apply {

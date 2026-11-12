@@ -960,7 +960,7 @@ class IssuesTest {
         var creates = 0
         var comments = 0
         val gateway = object : StubGateway(Issue(8, "Existing issue", true, null, "", emptyList(), emptyList())) {
-            override suspend fun create(title: String, body: String?): Issue {
+            override suspend fun create(title: String, body: String?, labels: List<String>, assignees: List<String>): Issue {
                 creates++
                 throw IssuesFailure("Failed")
             }
@@ -998,7 +998,7 @@ class IssuesTest {
         val initial = Issue(8, "Existing issue", false, null, "", emptyList(), emptyList())
         val reasons = mutableListOf<CloseReason>()
         val gateway = object : StubGateway(initial) {
-            override suspend fun create(title: String, body: String?): Issue {
+            override suspend fun create(title: String, body: String?, labels: List<String>, assignees: List<String>): Issue {
                 issue = Issue(9, title, true, "author", body.orEmpty(), emptyList(), emptyList())
                 return issue
             }
@@ -1643,6 +1643,105 @@ class IssuesTest {
         assertEquals(emptyList(), model.state.value.activity.items)
     }
 
+    @Test
+    fun `a template fills the new issue and creating sends its cleaned labels and assignees`() = runBlocking {
+        val template = IssueTemplate(
+            "Bug report", "Report a problem", IssueDraft("[Bug] ", "Steps", listOf("bug"), listOf("alice")),
+        )
+        val created = mutableListOf<List<Any?>>()
+        val gateway = object : StubGateway(Issue(8, "Existing issue", true, null, "", emptyList(), emptyList())) {
+            override suspend fun issueTemplates() = listOf(template)
+
+            override suspend fun create(title: String, body: String?, labels: List<String>, assignees: List<String>): Issue {
+                created += listOf(title, body, labels, assignees)
+                issue = Issue(9, title, true, null, body.orEmpty(), labels, assignees)
+                return issue
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+
+        model.startCreate(model.issueTemplates().single().draft)
+        assertEquals(template.draft, model.state.value.editor?.draft)
+        model.editDraft(template.draft.copy(title = "[Bug] Crash", labels = listOf(" bug ", "Bug", "", "ui")))
+        model.saveEditor()
+        await { !model.state.value.writing }
+        assertEquals<List<List<Any?>>>(listOf(listOf("[Bug] Crash", "Steps", listOf("bug", "ui"), listOf("alice"))), created)
+        assertNull(model.state.value.editor)
+        assertEquals(listOf("bug", "ui"), model.state.value.issue?.labels)
+    }
+
+    @Test
+    fun `templates load once per connection and refresh, and a failure counts as none`() = runBlocking {
+        var loads = 0
+        var fail = true
+        val template = IssueTemplate("Feature", null, IssueDraft(body = "Idea"))
+        val gateway = object : StubGateway(Issue(8, "Existing issue", true, null, "", emptyList(), emptyList())) {
+            override suspend fun issueTemplates(): List<IssueTemplate> {
+                loads++
+                if (fail) throw IssuesFailure("Rate limit")
+                return listOf(template)
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+
+        assertEquals(emptyList<IssueTemplate>(), model.issueTemplates())
+        assertNull(model.state.value.listError)
+        fail = false
+        assertEquals(listOf(template), model.issueTemplates())
+        assertEquals(listOf(template), model.issueTemplates())
+        assertEquals(2, loads)
+
+        model.refresh()
+        await { !model.state.value.listLoading }
+        model.issueTemplates()
+        assertEquals(3, loads)
+
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.issueTemplates()
+        assertEquals(4, loads)
+
+        model.connect(null)
+        assertEquals(emptyList<IssueTemplate>(), model.issueTemplates())
+        assertEquals(4, loads)
+    }
+
+    @Test
+    fun `GitHub create request leaves out empty labels and assignees`() {
+        assertEquals(mapOf<String, Any>("title" to "Title"), createFields("Title", null, emptyList(), emptyList()))
+        assertEquals(
+            mapOf("title" to "Title", "body" to "Body", "labels" to listOf("bug"), "assignees" to listOf("alice")),
+            createFields("Title", "Body", listOf("bug"), listOf("alice")),
+        )
+    }
+
+    @Test
+    fun `GitHub contents responses list template files and decode their Base64 text`() {
+        val listing = GithubApiRequest.Get.Optional.Json("https://api.github.com/example", Array<RestContent>::class.java)
+            .extractResult(
+                response(
+                    """[{"name":"bug.md","path":".github/ISSUE_TEMPLATE/bug.md","type":"file","url":"https://api.github.com/repos/o/r/contents/.github/ISSUE_TEMPLATE/bug.md?ref=main"},{"name":"nested","type":"dir","url":"https://api.github.com/x"}]""",
+                )
+            )
+        assertEquals(
+            listOf(
+                RestContent("bug.md", "file", "https://api.github.com/repos/o/r/contents/.github/ISSUE_TEMPLATE/bug.md?ref=main"),
+                RestContent("nested", "dir", "https://api.github.com/x"),
+            ),
+            listing?.toList(),
+        )
+        val encoded = java.util.Base64.getMimeEncoder(8, "\n".toByteArray())
+            .encodeToString("---\nname: Bug ✓\n---\nText".toByteArray())
+        val file = GithubApiRequest.Get.Optional.Json("https://api.github.com/example", RestFile::class.java)
+            .extractResult(response("""{"content":"${encoded.replace("\n", "\\n")}","encoding":"base64"}"""))
+        assertEquals("---\nname: Bug ✓\n---\nText", file?.text())
+        assertNull(RestFile("text", "none").text())
+    }
+
     private suspend fun await(condition: () -> Boolean) {
         withTimeout(3_000) { while (!condition()) yield() }
     }
@@ -1661,7 +1760,10 @@ class IssuesTest {
 
         override suspend fun issue(number: Long) = issue
         override suspend fun activity(number: Long, next: String?) = Page<IssueActivity>(emptyList(), null)
-        override suspend fun create(title: String, body: String?): Issue = error("Unexpected create")
+        override suspend fun create(title: String, body: String?, labels: List<String>, assignees: List<String>): Issue =
+            error("Unexpected create")
+
+        override suspend fun issueTemplates(): List<IssueTemplate> = error("Unexpected template list")
         override suspend fun updateIssue(number: Long, title: String, body: String): Issue = error("Unexpected edit")
         override suspend fun addComment(number: Long, body: String): Comment = error("Unexpected comment")
         override suspend fun updateComment(id: String, body: String): Comment = error("Unexpected comment edit")

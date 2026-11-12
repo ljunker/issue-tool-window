@@ -12,6 +12,7 @@ GitHub-Konto, das in IDEA bereits für **Pull Requests** eingerichtet ist.
 - **Volltextsuche** in Titel und Beschreibung; `#42` öffnet Issue 42 direkt
 - **Issue-Details** mit Kommentaren in einem Editor-Tab, der sich alle 30 Sekunden im Hintergrund aktualisiert
 - **Issues anlegen und bearbeiten**: Titel und Markdown-Beschreibung, Labels, Assignees, Milestone
+- **Issue-Vorlagen beim Anlegen**: Markdown-Vorlagen aus `.github/ISSUE_TEMPLATE/` füllen das neue Issue vor
 - **Kommentieren, schließen und wieder öffnen**
 - **Branch aus Issue erstellen**: Branch-Name aus Nummer und Titel, direkt ausgecheckt
 - **Issue des aktuellen Branches in der Statusleiste**: `#42` und gekürzter Titel, ein Klick öffnet das Issue
@@ -68,7 +69,7 @@ wenn das Tool Window geschlossen ist.
 
 | Aktion                                     | Wirkung                                                                                                                                 |
 |--------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------|
-| **New Issue**                              | Öffnet das Formular für ein neues Issue.                                                                                                |
+| **New Issue**                              | Öffnet das Formular für ein neues Issue mit Titel, Beschreibung, Labels und Assignees. Hat das Repository Vorlagen, wird vorher gewählt. |
 | **Edit Issue**                             | Bearbeitet Titel und Markdown-Quelltext der Beschreibung.                                                                               |
 | **Edit Labels**                            | Zeigt alle Labels des Repositorys mit Filterfeld. **Save Labels** fügt nur angehakte Labels hinzu und entfernt nur abgewählte.          |
 | **Edit Assignees**                         | Zeigt alle zuweisbaren Personen mit Filterfeld. **Save Assignees** ändert jede Person einzeln, parallele Änderungen auf GitHub bleiben erhalten. |
@@ -77,6 +78,13 @@ wenn das Tool Window geschlossen ist.
 | **Post Comment**                           | Fügt einen Kommentar hinzu.                                                                                                             |
 | **Edit** / **Delete** am Kommentar         | Erscheint nur, wenn GitHub dem aktiven Konto das Bearbeiten bzw. Löschen erlaubt. **Edit** öffnet den Markdown-Quelltext, **Delete** fragt vorher nach. |
 | **Close Issue** / **Reopen Issue**         | Schließt das Issue als erledigt bzw. öffnet es wieder. Das Ausklappmenü bietet **Close as Completed** und **Close as Not Planned**.      |
+
+Hat das Repository Markdown-Vorlagen in `.github/ISSUE_TEMPLATE/` auf dem Default-Branch, bietet **New Issue** sie
+zusammen mit **Blank issue** an. Eine Vorlage füllt Titel, Beschreibung, Labels und Assignees aus ihrem Frontmatter
+vor; alle Felder bleiben editierbar. Labels und Assignees werden kommagetrennt eingegeben. YAML-Issue-Forms und
+`config.yml` werden nicht angeboten. Ohne Vorlagen oder wenn sie nicht geladen werden können, öffnet **New Issue**
+direkt das leere Formular. Vorlagen werden einmal pro Verbindung geladen; **Refresh** lädt sie neu. Ohne
+Schreibrechte im Repository übernimmt GitHub Labels und Assignees eines neuen Issues nicht.
 
 Nach dem Speichern von Assignees zeigt der Tab die von GitHub gespeicherten Zuständigkeiten und nennt abgelehnte oder
 ignorierte Änderungen.
