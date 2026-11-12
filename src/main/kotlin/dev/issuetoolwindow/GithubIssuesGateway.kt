@@ -79,6 +79,11 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
             )
         ).toComment()
 
+    override suspend fun updateComment(id: String, body: String): Comment =
+        request(updateCommentRequest(id, body)).toComment()
+
+    override suspend fun deleteComment(id: String) = request(deleteCommentRequest(id)).confirm()
+
     override suspend fun close(number: Long, reason: CloseReason): Issue =
         changeState(number, mapOf("state" to "closed", "state_reason" to reason.apiValue))
 

@@ -66,6 +66,7 @@ wenn das Tool Window geschlossen ist.
 | **Edit Assignees**                         | Zeigt alle zuweisbaren Personen mit Filterfeld. **Save Assignees** ändert jede Person einzeln, parallele Änderungen auf GitHub bleiben erhalten. |
 | **Assign Me**                              | Weist das aktive Konto direkt zu, sofern es zuweisbar ist.                                                                              |
 | **Post Comment**                           | Fügt einen Kommentar hinzu.                                                                                                             |
+| **Edit** / **Delete** am Kommentar         | Erscheint nur, wenn GitHub dem aktiven Konto das Bearbeiten bzw. Löschen erlaubt. **Edit** öffnet den Markdown-Quelltext, **Delete** fragt vorher nach. |
 | **Close Issue** / **Reopen Issue**         | Schließt das Issue als erledigt bzw. öffnet es wieder. Das Ausklappmenü bietet **Close as Completed** und **Close as Not Planned**.      |
 
 Nach dem Speichern von Assignees zeigt der Tab die von GitHub gespeicherten Zuständigkeiten und nennt abgelehnte oder
