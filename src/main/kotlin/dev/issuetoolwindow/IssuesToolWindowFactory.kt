@@ -255,7 +255,7 @@ private class IssuesToolWindow(private val project: Project) : Disposable, Issue
         ActivityTracker.getInstance().inc()
     }
 
-    /** Keeps status, order, label and assignee of the list per project; the search text is not saved. */
+    /** Keeps status, order, label, assignee and milestone of the list per project; the search text is not saved. */
     private fun saveListSettings(settings: IssueListSettings) {
         if (settings == savedSettings) return
         savedSettings = settings

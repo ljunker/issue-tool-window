@@ -34,6 +34,11 @@ internal data class IssueDetailsContent(
         appendMetadata(message("detail.labels"), issue.labels, "issue-label")
         append(" &nbsp;·&nbsp; ")
         appendMetadata(message("detail.assignees"), issue.assignees, "issue-assignee")
+        append(" &nbsp;·&nbsp; ")
+        appendMetadata(
+            message("detail.milestone"), listOfNotNull(issue.milestone?.title), "issue-milestone",
+            message("detail.noMilestone"),
+        )
         append("</p>")
 
         appendCard("issue-description", issue.author, issue.createdAt, issue.body)
@@ -92,10 +97,15 @@ internal data class IssueDetailsContent(
         append("<strong>${escapeXmlEntities(entry.author ?: message("detail.unknown"))}</strong>")
     }
 
-    private fun StringBuilder.appendMetadata(heading: String, values: List<String>, valueClass: String) {
+    private fun StringBuilder.appendMetadata(
+        heading: String,
+        values: List<String>,
+        valueClass: String,
+        empty: String = message("detail.none"),
+    ) {
         append("<strong>${escapeXmlEntities(heading)}</strong> ")
         if (values.isEmpty()) {
-            append("<span class='issue-muted'>${escapeXmlEntities(message("detail.none"))}</span>")
+            append("<span class='issue-muted'>${escapeXmlEntities(empty)}</span>")
         } else {
             values.joinTo(this, separator = " ") { value ->
                 "<span class='$valueClass'>&nbsp;${escapeXmlEntities(value)}&nbsp;</span>"
@@ -209,7 +219,7 @@ internal fun issueDetailsStyleSheet(light: Boolean): StyleSheet {
         p.issue-metadata { margin: 0 0 6px 0; }
         .issue-muted, span.issue-time { color: $muted; }
         span.issue-label { color: $link; background-color: $labelBackground; border-radius: 6px; }
-        span.issue-assignee { background-color: $surface; border-radius: 6px; }
+        span.issue-assignee, span.issue-milestone { background-color: $surface; border-radius: 6px; }
         div.issue-description, div.issue-comment { border: 1px solid $border; border-radius: 6px; margin: 0 0 12px 0; }
         div.issue-description { border-color: $descriptionBorder; margin-top: 14px; }
         p.issue-card-header { color: $foreground; background-color: $surface; border-bottom: 1px solid $border; margin: 0; padding: 8px 14px; }

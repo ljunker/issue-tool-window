@@ -19,6 +19,9 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
         URI("https", "api.github.com", "/repos/${repository.fullName}/labels", "per_page=100", null).toASCIIString()
     private val assigneesUrl =
         URI("https", "api.github.com", "/repos/${repository.fullName}/assignees", "per_page=100", null).toASCIIString()
+    private val milestonesUrl = URI(
+        "https", "api.github.com", "/repos/${repository.fullName}/milestones", "state=all&per_page=100", null,
+    ).toASCIIString()
 
     override suspend fun issues(
         filter: IssueFilter,
@@ -147,6 +150,16 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
         return AssigneeChange(issue(number), failed)
     }
 
+    override suspend fun milestones(): List<Milestone> =
+        allPages(milestonesUrl) { url ->
+            val page =
+                request(GithubApiRequest.Get.JsonPage<RestMilestone>(pageUrl(url), RestMilestone::class.java, ACCEPT))
+            Page(page.items.map(RestMilestone::toMilestone), page.nextLink)
+        }.let(::milestonesForPicker)
+
+    override suspend fun setMilestone(number: Long, milestone: Long?): Issue =
+        request(setMilestoneRequest("$issuesUrl/$number", milestone)).toIssue()
+
     private inline fun attempt(login: String, failed: MutableMap<String, IssuesFailure>, change: () -> Unit) {
         try {
             change()
@@ -209,10 +222,15 @@ internal fun issueListUrl(
     append("$issuesUrl?state=${filter.apiValue}&sort=${sort.apiSort}&direction=${sort.apiDirection}")
     criteria.label?.let { append("&labels=").append(URLEncoder.encode(it, Charsets.UTF_8)) }
     criteria.assignee?.let { append("&assignee=").append(URLEncoder.encode(it, Charsets.UTF_8)) }
+    when (val milestone = criteria.milestone) {
+        null -> {}
+        MilestoneFilter.None -> append("&milestone=none")
+        is MilestoneFilter.Of -> append("&milestone=").append(milestone.milestone.number)
+    }
     append("&per_page=30")
 }
 
-/** Searches the issues of [repository]; without a [query] only the status, label and assignee qualifiers apply. */
+/** Searches the issues of [repository]; without a [query] only the status and criteria qualifiers apply. */
 internal fun issueSearchUrl(
     repository: Repository,
     query: String?,
@@ -227,6 +245,11 @@ internal fun issueSearchUrl(
         // Quoted values cannot add qualifiers that change the repository or status.
         criteria.label?.let { append(" label:").append(quoted(it)) }
         criteria.assignee?.let { append(" assignee:").append(quoted(it)) }
+        when (val milestone = criteria.milestone) {
+            null -> {}
+            MilestoneFilter.None -> append(" no:milestone")
+            is MilestoneFilter.Of -> append(" milestone:").append(quoted(milestone.milestone.title))
+        }
         if (query != null) append(' ').append(quoted(query))
     }
     return "https://api.github.com/search/issues?q=${URLEncoder.encode(terms, Charsets.UTF_8)}" +
@@ -241,6 +264,20 @@ internal fun issueLabelUrl(repository: Repository, number: Long, label: String):
     return URI("https", "api.github.com", "/repos/${repository.fullName}/issues/$number/labels", null)
         .toASCIIString() + "/" + name
 }
+
+/** Open milestones first, then closed ones; each group ordered by title. */
+internal fun milestonesForPicker(milestones: Iterable<Milestone>): List<Milestone> =
+    milestones.distinctBy(Milestone::number)
+        .sortedWith(compareBy<Milestone> { !it.open }.thenBy(String.CASE_INSENSITIVE_ORDER, Milestone::title))
+
+/**
+ * Sets or, with `null`, removes the milestone of the issue at [issueUrl]. The JSON mapper of the GitHub plugin drops
+ * `null` values, so the body is written explicitly.
+ */
+internal fun setMilestoneRequest(issueUrl: String, milestone: Long?): GithubApiRequest.Patch.Json<RestIssue> =
+    object : GithubApiRequest.Patch.Json<RestIssue>(issueUrl, emptyMap<String, Any>(), RestIssue::class.java) {
+        override val body: String = "{\"milestone\":${milestone ?: "null"}}"
+    }
 
 private fun assigneesBody(login: String): Map<String, List<String>> = mapOf("assignees" to listOf(login))
 
@@ -288,6 +325,7 @@ internal data class RestIssue(
     val createdAt: String? = null,
     val comments: Int = 0,
     val stateReason: String? = null,
+    val milestone: RestMilestone? = null,
 ) {
     fun toIssue(): Issue {
         val open = state == "open"
@@ -295,12 +333,16 @@ internal data class RestIssue(
             number, title, open, user?.login, body.orEmpty(), labels.map { it.name }, assignees.map { it.login },
             createdAt, comments, labels.mapNotNull { label -> label.color?.let { label.name to it } }.toMap(),
             closeReason = if (open) null else CloseReason.fromApi(stateReason),
+            milestone = milestone?.toMilestone(),
         )
     }
 }
 
 internal data class RestUser(val login: String)
 internal data class RestLabel(val name: String, val color: String? = null)
+internal data class RestMilestone(val number: Long, val title: String, val state: String? = null) {
+    fun toMilestone(): Milestone = Milestone(number, title, state != "closed")
+}
 internal data class RestComment(val nodeId: String, val user: RestUser?, val body: String?, val createdAt: String?) {
     fun toComment(): Comment = Comment(nodeId, user?.login, body.orEmpty(), createdAt)
 }

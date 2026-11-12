@@ -113,12 +113,14 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private val commentDrafts = mutableMapOf<Long, String>()
     private var labelOptions: List<String>? = null
     private var assigneeOptions: List<String>? = null
-    /** Whether the label and assignee restored on [connect] still need to be checked against the repository. */
+    private var milestoneOptions: List<Milestone>? = null
+    /** Whether the criteria restored on [connect] still need to be checked against the repository. */
     private var criteriaUnchecked = false
 
     /**
-     * Connects to [gateway] and shows its list with [settings]. A saved label or assignee that the repository no longer
-     * offers is dropped silently before the first page loads; when the options cannot be loaded, the values stay.
+     * Connects to [gateway] and shows its list with [settings]. A saved label, assignee or milestone that the repository
+     * no longer offers is dropped silently before the first page loads; when the options cannot be loaded, the values
+     * stay.
      */
     fun connect(gateway: IssuesGateway?, viewer: String? = null, settings: IssueListSettings = IssueListSettings()) {
         listJob?.cancel()
@@ -128,6 +130,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         commentDrafts.clear()
         labelOptions = null
         assigneeOptions = null
+        milestoneOptions = null
         this.gateway = gateway
         criteriaUnchecked = gateway != null && settings.criteria != IssueCriteria()
         mutableState.value = if (gateway == null) IssuesState() else IssuesState(
@@ -140,7 +143,10 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         if (gateway != null) loadList()
     }
 
-    /** [criteria] without a label or assignee that the connected repository does not offer (any more). */
+    /**
+     * [criteria] without a label, assignee or milestone that the connected repository does not offer (any more). A
+     * milestone is matched by number and takes the title GitHub reports now.
+     */
     private suspend fun validCriteria(criteria: IssueCriteria): IssueCriteria {
         suspend fun valid(value: String?, options: suspend () -> List<String>): String? {
             if (value == null) return null
@@ -151,9 +157,19 @@ internal class IssuesModel(private val scope: CoroutineScope) {
             }
             return offered.firstOrNull { it.equals(value, ignoreCase = true) }
         }
+        suspend fun validMilestone(filter: MilestoneFilter?): MilestoneFilter? {
+            if (filter !is MilestoneFilter.Of) return filter
+            val offered = try {
+                milestoneFilterOptions()
+            } catch (_: IssuesFailure) {
+                return filter
+            }
+            return offered.firstOrNull { it.number == filter.milestone.number }?.let(MilestoneFilter::Of)
+        }
         return IssueCriteria(
             label = valid(criteria.label, ::labelFilterOptions),
             assignee = valid(criteria.assignee, ::assigneeFilterOptions),
+            milestone = validMilestone(criteria.milestone),
         )
     }
 
@@ -181,6 +197,8 @@ internal class IssuesModel(private val scope: CoroutineScope) {
 
     fun filterAssignee(login: String?) = criteria(current.criteria.copy(assignee = login))
 
+    fun filterMilestone(milestone: MilestoneFilter?) = criteria(current.criteria.copy(milestone = milestone))
+
     private fun criteria(criteria: IssueCriteria) {
         if (!current.connected || current.writing || current.editor != null || criteria == current.criteria) return
         update { copy(criteria = criteria) }
@@ -202,6 +220,20 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         val people = assigneeOptions ?: source.assignees().also { if (gateway === source) assigneeOptions = it }
         val viewer = current.viewer ?: return people
         return listOf(viewer) + people.filterNot { it.equals(viewer, ignoreCase = true) }
+    }
+
+    /** Milestones of the connected repository, open and closed, loaded once per connection. */
+    suspend fun milestoneFilterOptions(): List<Milestone> {
+        val source = gateway ?: return emptyList()
+        return milestoneOptions ?: source.milestones().also { if (gateway === source) milestoneOptions = it }
+    }
+
+    /** Open milestones of the connected repository to set on an issue; loaded freshly, as they change more often. */
+    suspend fun openMilestones(): List<Milestone> {
+        val source = gateway ?: return emptyList()
+        val milestones = source.milestones()
+        if (gateway === source) milestoneOptions = milestones
+        return milestones.filter(Milestone::open)
     }
 
     fun sort(sort: IssueSort) {
@@ -544,6 +576,32 @@ internal class IssuesModel(private val scope: CoroutineScope) {
                     issue = changed,
                     issues = issues.copy(items = items),
                     feedback = statusFeedback(changed),
+                )
+            }
+        }
+    }
+
+    /** Whether the milestone of the shown issue can be changed now. */
+    val canChangeMilestone: Boolean
+        get() {
+            val state = current
+            return gateway != null && state.issue != null && !state.writing && state.editor == null &&
+                state.picker == null && state.commentEditor == null
+        }
+
+    /** Sets the milestone [milestone] (a number) on the shown issue or removes it with `null`. */
+    fun setMilestone(milestone: Long?) {
+        val issue = current.issue ?: return
+        if (!canChangeMilestone || issue.milestone?.number == milestone) return
+        write({ setMilestone(issue.number, milestone) }) { changed ->
+            update {
+                copy(
+                    issue = changed,
+                    issues = issues.copy(
+                        items = issues.items.map { if (it.number == changed.number) changed else it }.filter(::shows),
+                    ),
+                    feedback = changed.milestone?.let { message("feedback.milestone", changed.number, it.title) }
+                        ?: message("feedback.milestoneRemoved", changed.number),
                 )
             }
         }
