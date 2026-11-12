@@ -8,12 +8,17 @@
     account already configured for the <b>Pull Requests</b> tool window.</p>
     <ul>
       <li>Filter by status, label and assignee (including issues assigned to you) and search in title and description</li>
+      <li>Keep the issue list up to date in the background while the tool window is visible and get notified about
+      issues newly assigned to you</li>
       <li>Open an issue directly with <code>#42</code></li>
       <li>Read issue details, Markdown descriptions, comments and activity in an editor tab</li>
       <li>Create and edit issues, post, edit and delete comments, close and reopen issues</li>
+      <li>Start new issues from the repository's Markdown issue templates</li>
       <li>Add and remove labels, change assignees or assign yourself</li>
       <li>Create and check out a local Git branch for an issue</li>
       <li>See the issue of the current branch in the status bar and open it with one click</li>
+      <li>Find issues with <b>Search Everywhere</b>: <code>#42</code> or text from title and description</li>
+      <li>Open <code>#42</code> in code comments with Ctrl/Cmd+Click and from the Git log context menu</li>
     </ul>
     <p>Source code and issue tracker:
     <a href="https://github.com/ljunker/issue-tool-window">github.com/ljunker/issue-tool-window</a></p>
@@ -24,10 +29,19 @@
   <depends>org.jetbrains.plugins.github</depends>
   <resource-bundle>messages.IssuesBundle</resource-bundle>
   <extensions defaultExtensionNs="com.intellij">
+    <annotator language="" implementationClass="dev.issuetoolwindow.IssueCommentReferenceAnnotator"/>
     <fileEditorProvider implementation="dev.issuetoolwindow.IssueDetailsEditorProvider"/>
+    <notificationGroup id="GitHub Issues" displayType="BALLOON" key="notification.group"/>
+    <psi.referenceContributor language="" implementation="dev.issuetoolwindow.IssueCommentReferenceContributor"/>
+    <searchEverywhereContributor implementation="dev.issuetoolwindow.IssueSearchEverywhereContributorFactory"/>
     <statusBarWidgetFactory id="dev.issuetoolwindow.BranchIssue" implementation="dev.issuetoolwindow.IssueStatusBarWidgetFactory"
       order="after git"/>
     <toolWindow anchor="left" factoryClass="dev.issuetoolwindow.IssuesToolWindowFactory" icon="/icons/issues.svg" id="GitHub Issues"
       secondary="true"/>
   </extensions>
+  <actions>
+    <group id="dev.issuetoolwindow.OpenCommitIssue" class="dev.issuetoolwindow.OpenCommitIssueActionGroup">
+      <add-to-group group-id="Vcs.Log.ContextMenu" anchor="last"/>
+    </group>
+  </actions>
 </idea-plugin>

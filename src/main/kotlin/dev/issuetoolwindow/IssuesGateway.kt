@@ -40,11 +40,32 @@ internal enum class IssueSort(val messageKey: String, val apiSort: String, val a
     val apiDirection: String get() = if (ascending) "asc" else "desc"
 }
 
-/** Label and assignee restrictions of the issue list; `null` means no restriction. */
-internal data class IssueCriteria(val label: String? = null, val assignee: String? = null) {
+/** A milestone of the repository; [number] identifies it, [title] is what users and the search see. */
+internal data class Milestone(val number: Long, val title: String, val open: Boolean = true)
+
+/** Milestone restriction of the issue list: only issues without a milestone or only those of one milestone. */
+internal sealed interface MilestoneFilter {
+    fun includes(issue: Issue): Boolean
+
+    data object None : MilestoneFilter {
+        override fun includes(issue: Issue): Boolean = issue.milestone == null
+    }
+
+    data class Of(val milestone: Milestone) : MilestoneFilter {
+        override fun includes(issue: Issue): Boolean = issue.milestone?.number == milestone.number
+    }
+}
+
+/** Label, assignee and milestone restrictions of the issue list; `null` means no restriction. */
+internal data class IssueCriteria(
+    val label: String? = null,
+    val assignee: String? = null,
+    val milestone: MilestoneFilter? = null,
+) {
     fun includes(issue: Issue): Boolean =
         (label == null || issue.labels.any { it.equals(label, ignoreCase = true) }) &&
-            (assignee == null || issue.assignees.any { it.equals(assignee, ignoreCase = true) })
+            (assignee == null || issue.assignees.any { it.equals(assignee, ignoreCase = true) }) &&
+            (milestone == null || milestone.includes(issue))
 }
 
 /** Why GitHub closed an issue; only [COMPLETED] and [NOT_PLANNED] can be chosen when closing. */
@@ -73,6 +94,7 @@ internal data class Issue(
     val labelColors: Map<String, String> = emptyMap(),
     /** Set for closed issues only. */
     val closeReason: CloseReason? = if (open) null else CloseReason.COMPLETED,
+    val milestone: Milestone? = null,
 ) {
     /** Suffix of the bundle keys that describe the state: `open` or the [CloseReason.messageSuffix]. */
     val stateSuffix: String get() = if (open) "open" else (closeReason ?: CloseReason.COMPLETED).messageSuffix
@@ -129,7 +151,16 @@ internal interface IssuesGateway {
     ): Page<Issue>
     suspend fun issue(number: Long): Issue
     suspend fun activity(number: Long, next: String?): Page<IssueActivity>
-    suspend fun create(title: String, body: String?): Issue
+    /** Creates an issue; empty [labels] and [assignees] are left out of the request. */
+    suspend fun create(
+        title: String,
+        body: String?,
+        labels: List<String> = emptyList(),
+        assignees: List<String> = emptyList(),
+    ): Issue
+
+    /** Markdown templates of [ISSUE_TEMPLATE_DIRECTORY] ordered by file name; empty when the repository has none. */
+    suspend fun issueTemplates(): List<IssueTemplate>
     suspend fun updateIssue(number: Long, title: String, body: String): Issue
     suspend fun addComment(number: Long, body: String): Comment
 
@@ -156,6 +187,12 @@ internal interface IssuesGateway {
      * issue as GitHub stores it afterwards together with the changes that failed.
      */
     suspend fun changeAssignees(number: Long, add: Collection<String>, remove: Collection<String>): AssigneeChange
+
+    /** All milestones of the repository across every result page, open ones first, each group ordered by title. */
+    suspend fun milestones(): List<Milestone>
+
+    /** Sets the milestone with [milestone] as number or removes it with `null`; returns the issue as GitHub stores it. */
+    suspend fun setMilestone(number: Long, milestone: Long?): Issue
 }
 
 internal data class AssigneeChange(val issue: Issue, val failed: Map<String, IssuesFailure> = emptyMap())

@@ -116,13 +116,7 @@ private class IssueStatusBarWidget(
         val selected = FileEditorManager.getInstance(project).selectedFiles.firstOrNull()
         val git = GitBranchUtil.guessWidgetRepository(project, selected) ?: return null
         val number = git.currentBranch?.name?.let(::issueNumberFromBranch) ?: return null
-        val remotes = mappings
-            .filter { it.gitRepository == git && it.repository.serverPath.isGithubDotCom }
-            .map {
-                val path = it.repository.repositoryPath
-                RemoteRepository(Repository(path.owner, path.repository), it.remote.remote.name)
-            }
-        return issueRepository(remotes, connected)?.let { BranchIssue(it, number) }
+        return issueRepository(githubRemotes(mappings, git), connected)?.let { BranchIssue(it, number) }
     }
 
     private fun account(accounts: Set<GithubAccount>, connected: GithubAccount?): GithubAccount? = preferredAccount(

@@ -328,6 +328,230 @@ class IssuesTest {
     }
 
     @Test
+    fun `GitHub JSON maps the milestone of issues and orders milestones open first`() {
+        val issues = GithubApiRequest.Get.JsonPage("https://api.github.com/example", RestIssue::class.java)
+        val parsed = issues.extractResult(
+            response(
+                """[{"number":7,"title":"Planned","state":"open","milestone":{"number":3,"title":"v1.0","state":"open"}},""" +
+                    """{"number":8,"title":"Unplanned","state":"open","milestone":null}]"""
+            )
+        ).items.map(RestIssue::toIssue)
+        assertEquals(listOf(Milestone(3, "v1.0"), null), parsed.map(Issue::milestone))
+
+        val milestones = GithubApiRequest.Get.JsonPage("https://api.github.com/example", RestMilestone::class.java)
+            .extractResult(
+                response(
+                    """[{"number":1,"title":"v0.9","state":"closed"},{"number":3,"title":"b","state":"open"},""" +
+                        """{"number":2,"title":"A","state":"open"},{"number":2,"title":"A","state":"open"}]"""
+                )
+            ).items.map(RestMilestone::toMilestone)
+        assertEquals(
+            listOf(Milestone(2, "A"), Milestone(3, "b"), Milestone(1, "v0.9", open = false)),
+            milestonesForPicker(milestones),
+        )
+    }
+
+    @Test
+    fun `issue list and search URLs filter by milestone number, title or no milestone`() {
+        val base = "https://api.github.com/repos/owner/project/issues"
+        val release = MilestoneFilter.Of(Milestone(12, "Release \"2\""))
+        assertEquals(
+            "$base?state=open&sort=created&direction=desc&labels=bug&milestone=12&per_page=30",
+            issueListUrl(base, IssueFilter.OPEN, IssueSort.NEWEST, IssueCriteria("bug", milestone = release)),
+        )
+        assertEquals(
+            "$base?state=all&sort=created&direction=desc&milestone=none&per_page=30",
+            issueListUrl(base, IssueFilter.ALL, IssueSort.NEWEST, IssueCriteria(milestone = MilestoneFilter.None)),
+        )
+        val repo = Repository("owner", "project")
+        fun terms(criteria: IssueCriteria, query: String?) = URLDecoder.decode(
+            URI(issueSearchUrl(repo, query, IssueFilter.OPEN, IssueSort.NEWEST, criteria))
+                .rawQuery.substringAfter("q=").substringBefore('&'),
+            Charsets.UTF_8,
+        )
+        assertEquals(
+            "repo:owner/project is:issue in:title,body state:open assignee:\"bob\" milestone:\"Release  2 \" \"crash\"",
+            terms(IssueCriteria(assignee = "bob", milestone = release), "crash"),
+        )
+        assertEquals(
+            "repo:owner/project is:issue state:open no:milestone",
+            terms(IssueCriteria(milestone = MilestoneFilter.None), null),
+        )
+    }
+
+    @Test
+    fun `setting a milestone sends its number and removing it sends an explicit null`() {
+        val url = "https://api.github.com/repos/owner/project/issues/4"
+        assertEquals("""{"milestone":12}""", setMilestoneRequest(url, 12).body)
+        assertEquals("""{"milestone":null}""", setMilestoneRequest(url, null).body)
+        assertEquals(url, setMilestoneRequest(url, null).url)
+    }
+
+    @Test
+    fun `milestone criteria match issues of one milestone or without milestone`() {
+        val planned = Issue(1, "Planned", true, null, "", listOf("bug"), emptyList(), milestone = Milestone(3, "v1.0"))
+        val unplanned = planned.copy(number = 2, milestone = null)
+        val v1 = MilestoneFilter.Of(Milestone(3, "renamed", open = false))
+        assertTrue(IssueCriteria(milestone = v1).includes(planned))
+        assertFalse(IssueCriteria(milestone = v1).includes(unplanned))
+        assertFalse(IssueCriteria(milestone = MilestoneFilter.None).includes(planned))
+        assertTrue(IssueCriteria(milestone = MilestoneFilter.None).includes(unplanned))
+        assertFalse(IssueCriteria("docs", milestone = v1).includes(planned))
+    }
+
+    @Test
+    fun `milestone filters are saved with number and title and read back`() {
+        val store = mutableMapOf<String, String>()
+        val write: (String, String?) -> Unit = { key, value ->
+            if (value == null) store.remove(key) else store[key] = value
+        }
+        val release = IssueListSettings(criteria = IssueCriteria(milestone = MilestoneFilter.Of(Milestone(12, "v2.0"))))
+        writeListSettings(release, write)
+        assertEquals(release, readListSettings(store::get))
+
+        val none = IssueListSettings(criteria = IssueCriteria(milestone = MilestoneFilter.None))
+        writeListSettings(none, write)
+        assertEquals(mapOf("dev.issuetoolwindow.milestone" to "none"), store)
+        assertEquals(none, readListSettings(store::get))
+
+        writeListSettings(IssueListSettings(), write)
+        assertTrue(store.isEmpty())
+        val broken = mapOf("dev.issuetoolwindow.milestone" to "x", "dev.issuetoolwindow.milestone.title" to "v2.0")
+        assertEquals(IssueListSettings(), readListSettings(broken::get))
+        val untitled = mapOf("dev.issuetoolwindow.milestone" to "12")
+        assertEquals(IssueListSettings(), readListSettings(untitled::get))
+    }
+
+    @Test
+    fun `milestone filter combines with label and search and a saved milestone is checked by number`() = runBlocking {
+        val issue = Issue(1, "Issue", true, null, "", listOf("bug"), emptyList())
+        val listCalls = mutableListOf<IssueCriteria>()
+        val searchCalls = mutableListOf<IssueCriteria>()
+        val gateway = object : StubGateway(issue) {
+            var failOptions = false
+            var loads = 0
+
+            override suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?): Page<Issue> {
+                listCalls += criteria
+                return Page(emptyList(), null)
+            }
+
+            override suspend fun search(
+                query: String,
+                filter: IssueFilter,
+                sort: IssueSort,
+                criteria: IssueCriteria,
+                next: String?,
+            ): Page<Issue> {
+                searchCalls += criteria
+                return Page(emptyList(), null)
+            }
+
+            override suspend fun milestones(): List<Milestone> {
+                loads++
+                if (failOptions) throw IssuesFailure("offline")
+                return listOf(Milestone(3, "v1.0 renamed"), Milestone(1, "v0.9", open = false))
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.filterLabel("bug")
+        await { !model.state.value.listLoading }
+        val v1 = MilestoneFilter.Of(Milestone(3, "v1.0 renamed"))
+        model.filterMilestone(v1)
+        await { !model.state.value.listLoading }
+        model.editSearch("crash")
+        model.search()
+        await { !model.state.value.listLoading }
+        model.filterMilestone(MilestoneFilter.None)
+        await { !model.state.value.listLoading }
+        assertEquals(listOf(IssueCriteria("bug", milestone = v1), IssueCriteria("bug", milestone = MilestoneFilter.None)), searchCalls)
+        model.filterMilestone(null)
+        await { !model.state.value.listLoading }
+        assertEquals(IssueCriteria("bug"), model.state.value.criteria)
+        assertEquals(listOf(Milestone(3, "v1.0 renamed"), Milestone(1, "v0.9", open = false)), model.milestoneFilterOptions())
+        assertEquals(listOf(Milestone(3, "v1.0 renamed"), Milestone(1, "v0.9", open = false)), model.milestoneFilterOptions())
+        assertEquals(1, gateway.loads)
+
+        listCalls.clear()
+        val saved = { number: Long -> IssueListSettings(criteria = IssueCriteria(milestone = MilestoneFilter.Of(Milestone(number, "v1.0")))) }
+        model.connect(gateway, settings = saved(3))
+        await { !model.state.value.listLoading }
+        model.connect(gateway, settings = saved(99))
+        await { !model.state.value.listLoading }
+        model.connect(gateway, settings = IssueListSettings(criteria = IssueCriteria(milestone = MilestoneFilter.None)))
+        await { !model.state.value.listLoading }
+        gateway.failOptions = true
+        model.connect(gateway, settings = saved(99))
+        await { !model.state.value.listLoading }
+        assertEquals(
+            listOf(
+                IssueCriteria(milestone = v1),
+                IssueCriteria(),
+                IssueCriteria(milestone = MilestoneFilter.None),
+                saved(99).criteria,
+            ),
+            listCalls,
+        )
+    }
+
+    @Test
+    fun `setting and removing a milestone shows the stored issue and leaves a filtered list`() = runBlocking {
+        val v1 = Milestone(3, "v1.0")
+        val initial = Issue(4, "Issue", true, null, "", emptyList(), emptyList(), milestone = v1)
+        val changes = mutableListOf<Long?>()
+        val gateway = object : StubGateway(initial) {
+            override suspend fun milestones() = listOf(Milestone(5, "v2.0"), v1, Milestone(1, "old", open = false))
+
+            override suspend fun setMilestone(number: Long, milestone: Long?): Issue {
+                changes += milestone
+                issue = issue.copy(milestone = milestones().firstOrNull { it.number == milestone })
+                return issue
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        model.filterMilestone(MilestoneFilter.Of(v1))
+        await { !model.state.value.listLoading }
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+        assertEquals(listOf(Milestone(5, "v2.0"), v1), model.openMilestones())
+
+        model.setMilestone(3)
+        assertTrue(changes.isEmpty())
+
+        model.setMilestone(5)
+        await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
+        assertEquals("Set milestone v2.0 on issue #4.", model.state.value.feedback)
+        assertEquals(Milestone(5, "v2.0"), model.state.value.issue?.milestone)
+        assertTrue(model.state.value.issues.items.isEmpty())
+
+        model.setMilestone(null)
+        await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
+        assertEquals("Removed the milestone from issue #4.", model.state.value.feedback)
+        assertNull(model.state.value.issue?.milestone)
+        assertEquals(listOf(5L, null), changes)
+
+        model.startEdit()
+        assertFalse(model.canChangeMilestone)
+        model.setMilestone(5)
+        assertEquals(listOf(5L, null), changes)
+    }
+
+    @Test
+    fun `list rows and issue details show the milestone`() {
+        val issue = Issue(16, "Title", true, "ljunker", "", emptyList(), emptyList(), milestone = Milestone(3, "v1.0 <b>"))
+        assertEquals("#16 · by ljunker · Milestone v1.0 <b>", issueMetaLine(issue) { "Today" })
+        assertEquals("#16 · Milestone v1.0 <b>", issueMetaLine(issue.copy(author = null)) { "Today" })
+
+        val html = IssueDetailsContent(issue, emptyList(), false).toHtml()
+        assertTrue("<strong>Milestone</strong> <span class='issue-milestone'>&nbsp;v1.0 &lt;b&gt;&nbsp;</span>" in html, html)
+        val without = IssueDetailsContent(issue.copy(milestone = null), emptyList(), false).toHtml()
+        assertTrue("<strong>Milestone</strong> <span class='issue-muted'>None</span>" in without, without)
+    }
+
+    @Test
     fun `list rows describe number, creation date and author`() {
         val issue = Issue(16, "Title", true, "ljunker", "", emptyList(), emptyList(), "2026-11-11T09:00:00Z")
         assertEquals("#16 · created Today, by ljunker", issueMetaLine(issue) { "Today" })
@@ -736,7 +960,7 @@ class IssuesTest {
         var creates = 0
         var comments = 0
         val gateway = object : StubGateway(Issue(8, "Existing issue", true, null, "", emptyList(), emptyList())) {
-            override suspend fun create(title: String, body: String?): Issue {
+            override suspend fun create(title: String, body: String?, labels: List<String>, assignees: List<String>): Issue {
                 creates++
                 throw IssuesFailure("Failed")
             }
@@ -774,7 +998,7 @@ class IssuesTest {
         val initial = Issue(8, "Existing issue", false, null, "", emptyList(), emptyList())
         val reasons = mutableListOf<CloseReason>()
         val gateway = object : StubGateway(initial) {
-            override suspend fun create(title: String, body: String?): Issue {
+            override suspend fun create(title: String, body: String?, labels: List<String>, assignees: List<String>): Issue {
                 issue = Issue(9, title, true, "author", body.orEmpty(), emptyList(), emptyList())
                 return issue
             }
@@ -1419,6 +1643,257 @@ class IssuesTest {
         assertEquals(emptyList(), model.state.value.activity.items)
     }
 
+    @Test
+    fun `a template fills the new issue and creating sends its cleaned labels and assignees`() = runBlocking {
+        val template = IssueTemplate(
+            "Bug report", "Report a problem", IssueDraft("[Bug] ", "Steps", listOf("bug"), listOf("alice")),
+        )
+        val created = mutableListOf<List<Any?>>()
+        val gateway = object : StubGateway(Issue(8, "Existing issue", true, null, "", emptyList(), emptyList())) {
+            override suspend fun issueTemplates() = listOf(template)
+
+            override suspend fun create(title: String, body: String?, labels: List<String>, assignees: List<String>): Issue {
+                created += listOf(title, body, labels, assignees)
+                issue = Issue(9, title, true, null, body.orEmpty(), labels, assignees)
+                return issue
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+
+        model.startCreate(model.issueTemplates().single().draft)
+        assertEquals(template.draft, model.state.value.editor?.draft)
+        model.editDraft(template.draft.copy(title = "[Bug] Crash", labels = listOf(" bug ", "Bug", "", "ui")))
+        model.saveEditor()
+        await { !model.state.value.writing }
+        assertEquals<List<List<Any?>>>(listOf(listOf("[Bug] Crash", "Steps", listOf("bug", "ui"), listOf("alice"))), created)
+        assertNull(model.state.value.editor)
+        assertEquals(listOf("bug", "ui"), model.state.value.issue?.labels)
+    }
+
+    @Test
+    fun `templates load once per connection and refresh, and a failure counts as none`() = runBlocking {
+        var loads = 0
+        var fail = true
+        val template = IssueTemplate("Feature", null, IssueDraft(body = "Idea"))
+        val gateway = object : StubGateway(Issue(8, "Existing issue", true, null, "", emptyList(), emptyList())) {
+            override suspend fun issueTemplates(): List<IssueTemplate> {
+                loads++
+                if (fail) throw IssuesFailure("Rate limit")
+                return listOf(template)
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+
+        assertEquals(emptyList<IssueTemplate>(), model.issueTemplates())
+        assertNull(model.state.value.listError)
+        fail = false
+        assertEquals(listOf(template), model.issueTemplates())
+        assertEquals(listOf(template), model.issueTemplates())
+        assertEquals(2, loads)
+
+        model.refresh()
+        await { !model.state.value.listLoading }
+        model.issueTemplates()
+        assertEquals(3, loads)
+
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.issueTemplates()
+        assertEquals(4, loads)
+
+        model.connect(null)
+        assertEquals(emptyList<IssueTemplate>(), model.issueTemplates())
+        assertEquals(4, loads)
+    }
+
+    @Test
+    fun `GitHub create request leaves out empty labels and assignees`() {
+        assertEquals(mapOf<String, Any>("title" to "Title"), createFields("Title", null, emptyList(), emptyList()))
+        assertEquals(
+            mapOf("title" to "Title", "body" to "Body", "labels" to listOf("bug"), "assignees" to listOf("alice")),
+            createFields("Title", "Body", listOf("bug"), listOf("alice")),
+        )
+    }
+
+    @Test
+    fun `GitHub contents responses list template files and decode their Base64 text`() {
+        val listing = GithubApiRequest.Get.Optional.Json("https://api.github.com/example", Array<RestContent>::class.java)
+            .extractResult(
+                response(
+                    """[{"name":"bug.md","path":".github/ISSUE_TEMPLATE/bug.md","type":"file","url":"https://api.github.com/repos/o/r/contents/.github/ISSUE_TEMPLATE/bug.md?ref=main"},{"name":"nested","type":"dir","url":"https://api.github.com/x"}]""",
+                )
+            )
+        assertEquals(
+            listOf(
+                RestContent("bug.md", "file", "https://api.github.com/repos/o/r/contents/.github/ISSUE_TEMPLATE/bug.md?ref=main"),
+                RestContent("nested", "dir", "https://api.github.com/x"),
+            ),
+            listing?.toList(),
+        )
+        val encoded = java.util.Base64.getMimeEncoder(8, "\n".toByteArray())
+            .encodeToString("---\nname: Bug ✓\n---\nText".toByteArray())
+        val file = GithubApiRequest.Get.Optional.Json("https://api.github.com/example", RestFile::class.java)
+            .extractResult(response("""{"content":"${encoded.replace("\n", "\\n")}","encoding":"base64"}"""))
+        assertEquals("---\nname: Bug ✓\n---\nText", file?.text())
+        assertNull(RestFile("text", "none").text())
+    }
+
+    @Test
+    fun `background list update keeps selection and loaded pages and skips while editing`() = runBlocking {
+        fun issue(number: Long, title: String = "Issue $number", assignees: List<String> = emptyList()) =
+            Issue(number, title, true, null, "", emptyList(), assignees)
+        val gateway = PagedGateway(listOf(issue(5), issue(4), issue(3), issue(2), issue(1)))
+        val model = IssuesModel(this)
+        val states = mutableListOf<IssuesState>()
+        val watcher = launch { model.state.collect { states += it } }
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.moreIssues()
+        await { !model.state.value.listLoading && model.state.value.issues.items.size == 4 }
+        model.select(4)
+        await { !model.state.value.detailLoading }
+        states.clear()
+        gateway.requests.clear()
+
+        gateway.all = listOf(issue(6), issue(5), issue(4, "Renamed elsewhere"), issue(3), issue(2), issue(1))
+        model.pollList()
+        await { model.state.value.issues.items.firstOrNull()?.number == 6L }
+        assertEquals(listOf(null, "2"), gateway.requests)
+        assertEquals(listOf(6L, 5L, 4L, 3L), model.state.value.issues.items.map(Issue::number))
+        assertEquals("4", model.state.value.issues.next)
+        assertEquals("Renamed elsewhere", model.state.value.issues.items[2].title)
+        assertEquals(4L, model.state.value.selected)
+        assertTrue(states.none { it.listLoading })
+        watcher.cancel()
+
+        gateway.requests.clear()
+        model.startCreate()
+        model.pollList()
+        repeat(5) { yield() }
+        assertEquals(emptyList(), gateway.requests)
+    }
+
+    @Test
+    fun `background failures stay hidden and lengthen the poll interval until a success or refresh`() = runBlocking {
+        val gateway = PagedGateway(listOf(Issue(1, "Issue", true, null, "", emptyList(), emptyList())))
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        assertEquals(IssuesModel.POLL_INTERVAL, model.pollInterval)
+
+        gateway.failure = IssuesFailure("Rate limit")
+        model.pollList()
+        await { model.pollInterval == IssuesModel.POLL_INTERVAL * 2 }
+        model.pollList()
+        await { model.pollInterval == IssuesModel.POLL_INTERVAL * 4 }
+        assertNull(model.state.value.listError)
+        assertEquals(1, model.state.value.issues.items.size)
+        repeat(4) {
+            model.pollList()
+            repeat(5) { yield() }
+        }
+        assertEquals(IssuesModel.MAX_POLL_INTERVAL, model.pollInterval)
+
+        gateway.failure = null
+        model.pollList()
+        await { model.pollInterval == IssuesModel.POLL_INTERVAL }
+
+        gateway.failure = IssuesFailure("Bad credentials", offerSignIn = true)
+        model.pollList()
+        await { model.pollInterval == IssuesModel.POLL_INTERVAL * 2 }
+        gateway.failure = null
+        gateway.requests.clear()
+        model.pollList()
+        model.pollAssigned { error("Unexpected notification") }
+        repeat(5) { yield() }
+        assertEquals(emptyList(), gateway.requests)
+        assertNull(model.state.value.listError)
+
+        model.refresh()
+        assertEquals(IssuesModel.POLL_INTERVAL, model.pollInterval)
+        await { !model.state.value.listLoading }
+        gateway.requests.clear()
+        model.pollList()
+        await { gateway.requests.isNotEmpty() }
+    }
+
+    @Test
+    fun `newly assigned issues are reported once, not at the first check and not when assigned in the tool window`() =
+        runBlocking {
+            fun issue(number: Long, vararg assignees: String) =
+                Issue(number, "Issue $number", true, null, "", emptyList(), assignees.toList())
+            val gateway = object : PagedGateway(listOf(issue(1, "me"), issue(2))) {
+                override suspend fun changeAssignees(number: Long, add: Collection<String>, remove: Collection<String>) =
+                    AssigneeChange(issue(number, *add.toTypedArray()).also { all = all.map { old -> if (old.number == number) it else old } })
+
+                override suspend fun assignees() = listOf("me", "alice")
+            }
+            val model = IssuesModel(this)
+            model.connect(gateway, "me")
+            await { !model.state.value.listLoading }
+            val reported = mutableListOf<List<Long>>()
+            suspend fun check() {
+                val requests = gateway.requests.size
+                model.pollAssigned { issues -> reported += issues.map(Issue::number) }
+                await { gateway.requests.size > requests }
+                repeat(5) { yield() }
+            }
+
+            check()
+            assertEquals(emptyList(), reported)
+
+            gateway.all = listOf(issue(3, "Me"), issue(1, "me"), issue(2))
+            check()
+            assertEquals(listOf(listOf(3L)), reported)
+            check()
+            assertEquals(1, reported.size)
+
+            model.select(2)
+            await { !model.state.value.detailLoading }
+            model.startAssignees()
+            await { model.state.value.picker?.loading == false }
+            model.assignMe()
+            await { !model.state.value.writing && !model.state.value.listLoading && !model.state.value.detailLoading }
+            check()
+            assertEquals(1, reported.size)
+
+            model.forgetAssigned()
+            gateway.all = gateway.all + issue(4, "me")
+            check()
+            assertEquals(1, reported.size)
+        }
+
+    @Test
+    fun `list rows change only where the issues differ`() {
+        data class Row(val id: Int, val text: String = "row $id")
+        val rows = javax.swing.DefaultListModel<Row>()
+        rows.addAll(listOf(Row(1), Row(2), Row(3), Row(4)))
+        val changes = mutableListOf<String>()
+        rows.addListDataListener(object : javax.swing.event.ListDataListener {
+            override fun intervalAdded(e: javax.swing.event.ListDataEvent) { changes += "add ${e.index0}" }
+            override fun intervalRemoved(e: javax.swing.event.ListDataEvent) { changes += "remove ${e.index0}" }
+            override fun contentsChanged(e: javax.swing.event.ListDataEvent) { changes += "set ${e.index0}" }
+        })
+        fun sync(vararg items: Row): List<Row> {
+            changes.clear()
+            syncRows(rows, items.toList(), Row::id)
+            return (0 until rows.size()).map(rows::get)
+        }
+
+        assertEquals(listOf(Row(1), Row(2), Row(3), Row(4)), sync(Row(1), Row(2), Row(3), Row(4)))
+        assertEquals(emptyList(), changes)
+        assertEquals(listOf(Row(0), Row(1), Row(2, "renamed"), Row(3), Row(4)), sync(Row(0), Row(1), Row(2, "renamed"), Row(3), Row(4)))
+        assertEquals(listOf("add 0", "set 2"), changes)
+        assertEquals(listOf(Row(3), Row(0), Row(1), Row(4)), sync(Row(3), Row(0), Row(1), Row(4)))
+        assertEquals(listOf("remove 2", "remove 2", "add 0"), changes)
+        assertEquals(listOf(Row(4)), sync(Row(4)))
+        assertEquals(emptyList(), sync())
+    }
+
     private suspend fun await(condition: () -> Boolean) {
         withTimeout(3_000) { while (!condition()) yield() }
     }
@@ -1437,7 +1912,10 @@ class IssuesTest {
 
         override suspend fun issue(number: Long) = issue
         override suspend fun activity(number: Long, next: String?) = Page<IssueActivity>(emptyList(), null)
-        override suspend fun create(title: String, body: String?): Issue = error("Unexpected create")
+        override suspend fun create(title: String, body: String?, labels: List<String>, assignees: List<String>): Issue =
+            error("Unexpected create")
+
+        override suspend fun issueTemplates(): List<IssueTemplate> = error("Unexpected template list")
         override suspend fun updateIssue(number: Long, title: String, body: String): Issue = error("Unexpected edit")
         override suspend fun addComment(number: Long, body: String): Comment = error("Unexpected comment")
         override suspend fun updateComment(id: String, body: String): Comment = error("Unexpected comment edit")
@@ -1451,6 +1929,26 @@ class IssuesTest {
         override suspend fun assignees(): List<String> = error("Unexpected assignee list")
         override suspend fun changeAssignees(number: Long, add: Collection<String>, remove: Collection<String>):
             AssigneeChange = error("Unexpected assignee change")
+
+        override suspend fun milestones(): List<Milestone> = error("Unexpected milestone list")
+        override suspend fun setMilestone(number: Long, milestone: Long?): Issue = error("Unexpected milestone change")
+    }
+
+    /** Pages of [pageSize] issues with the start index as next token; [failure] fails every list request. */
+    private open class PagedGateway(var all: List<Issue>, private val pageSize: Int = 2) : StubGateway(all.first()) {
+        val requests = mutableListOf<String?>()
+        var failure: IssuesFailure? = null
+
+        override suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?): Page<Issue> {
+            failure?.let { throw it }
+            requests += next
+            val matching = all.filter { filter.includes(it) && criteria.includes(it) }
+            val start = next?.toInt() ?: 0
+            val end = (start + pageSize).coerceAtMost(matching.size)
+            return Page(matching.subList(start, end), end.takeIf { it < matching.size }?.toString())
+        }
+
+        override suspend fun issue(number: Long) = all.first { it.number == number }
     }
 
     private fun response(json: String, next: String? = null): GithubApiResponse = object : GithubApiResponse {

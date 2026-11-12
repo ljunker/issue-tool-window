@@ -77,6 +77,7 @@ internal class IssuesPanel(
     private val sortChip = MutableStateFlow<IssueSort?>(null)
     private val labelChip = MutableStateFlow<String?>(null)
     private val assigneeChip = MutableStateFlow<String?>(null)
+    private val milestoneChip = MutableStateFlow<MilestoneFilter?>(null)
     private val issueRows = DefaultListModel<Issue>()
     private val issueList = JBList(issueRows).apply {
         selectionMode = ListSelectionModel.SINGLE_SELECTION
@@ -114,6 +115,14 @@ internal class IssuesPanel(
                         if (isViewer(login)) PopupItemPresentation.Simple(message("filter.assignee.me"), null, login)
                         else PopupItemPresentation.Simple(login)
                     }
+                }
+            )
+            add(
+                DropDownComponentFactory(milestoneChip).create(scope, message("filter.milestone"), ::milestoneName) { point ->
+                    val options = suspend {
+                        listOf(MilestoneFilter.None) + model.milestoneFilterOptions().map(MilestoneFilter::Of)
+                    }
+                    choose(point, options) { PopupItemPresentation.Simple(milestoneChoice(it)) }
                 }
             )
             add(
@@ -166,6 +175,12 @@ internal class IssuesPanel(
                 assigneeChip.value = model.state.value.criteria.assignee
             }
         }
+        scope.launch {
+            milestoneChip.collect { chosen ->
+                model.filterMilestone(chosen)
+                milestoneChip.value = model.state.value.criteria.milestone
+            }
+        }
         searchField.textEditor.addActionListener { submitSearch() }
         searchField.addDocumentListener(object : DocumentAdapter() {
             override fun textChanged(e: DocumentEvent) {
@@ -201,14 +216,15 @@ internal class IssuesPanel(
             sortChip.value = sortChipValue(state.sort, sortChip.value)
             labelChip.value = state.criteria.label
             assigneeChip.value = state.criteria.assignee
+            milestoneChip.value = state.criteria.milestone
             if (searchField.text != state.searchInput) searchField.text = state.searchInput
             searchField.isEnabled = canNavigate
             issueList.isEnabled = canNavigate
 
             if (renderedIssues != state.issues.items) {
                 renderedIssues = state.issues.items
-                issueRows.clear()
-                issueRows.addAll(renderedIssues)
+                // Changing only what differs keeps the scroll position when the list is updated in the background.
+                syncRows(issueRows, renderedIssues, Issue::number)
             }
             issueList.selectedIndex = renderedIssues.indexOfFirst { it.number == state.selected }
             issueList.emptyText.text = when {
@@ -226,24 +242,6 @@ internal class IssuesPanel(
         }
         // A short first page does not fill the list, so nothing could be scrolled to load the next one.
         SwingUtilities.invokeLater(::loadMoreWhenAtEnd)
-    }
-
-    /** Shows the options of the connected repository, so a repository change never offers stale values. */
-    private suspend fun choose(
-        point: RelativePoint,
-        options: suspend () -> List<String>,
-        presentation: (String) -> PopupItemPresentation,
-    ): String? {
-        val loaded = flow {
-            emit(
-                try {
-                    Result.success(options())
-                } catch (error: IssuesFailure) {
-                    Result.failure(error)
-                }
-            )
-        }
-        return ChooserPopupUtil.showAsyncChooserPopup(point, loaded, presentation)
     }
 
     private fun isViewer(login: String) = model.state.value.viewer?.equals(login, ignoreCase = true) == true
@@ -287,6 +285,7 @@ internal class IssuesPanel(
 
 internal class IssueDetailsPanel(
     private val model: IssuesModel,
+    private val scope: CoroutineScope,
     openOnGitHub: (Long) -> Unit,
     createBranch: (Issue) -> Unit,
     parent: Disposable,
@@ -332,6 +331,7 @@ internal class IssueDetailsPanel(
     private val edit = button("action.edit", model::startEdit)
     private val editLabels = button("action.labels", model::startLabels)
     private val editAssignees = button("action.assignees", model::startAssignees)
+    private val editMilestone: JButton = button("action.milestone") { chooseMilestone() }
     private val branch = button("action.branch") { model.state.value.issue?.let(createBranch) }
     private val browser =
         ActionLink(message("action.browser")) { model.state.value.issue?.let { openOnGitHub(it.number) } }
@@ -352,6 +352,10 @@ internal class IssueDetailsPanel(
     private val editorHeading = JBLabel()
     private val title = JBTextField()
     private val description = textArea(5)
+    private val labels = JBTextField().apply { emptyText.text = message("editor.namesHint") }
+    private val assignees = JBTextField().apply { emptyText.text = message("editor.namesHint") }
+    private val labelsLabel = labelFor("editor.labels", labels)
+    private val assigneesLabel = labelFor("editor.assignees", assignees)
     private val save = button("action.create", model::saveEditor)
     private val cancel = button("action.cancel", model::cancelEditor)
     private val pickerHeading = JBLabel().apply { font = font.deriveFont(Font.BOLD) }
@@ -394,7 +398,7 @@ internal class IssueDetailsPanel(
         }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
             add(
-                stack(row(status, edit, editLabels, editAssignees, branch, browser, refresh), detailStatus),
+                stack(row(status, edit, editLabels, editAssignees, editMilestone, branch, browser, refresh), detailStatus),
                 BorderLayout.NORTH,
             )
             add(issueScroll, BorderLayout.CENTER)
@@ -406,7 +410,7 @@ internal class IssueDetailsPanel(
                 BorderLayout.NORTH,
             )
             add(JBScrollPane(description), BorderLayout.CENTER)
-            add(row(save, cancel), BorderLayout.SOUTH)
+            add(stack(labelsLabel, labels, assigneesLabel, assignees, row(save, cancel)), BorderLayout.SOUTH)
         }
         details.add(detailPlaceholder, "empty")
         details.add(detail, "issue")
@@ -434,6 +438,8 @@ internal class IssueDetailsPanel(
         commentEditorText.onEdit { if (!updating) model.editCommentEditor(commentEditorText.text) }
         title.onEdit { if (!updating) updateDraft() }
         description.onEdit { if (!updating) updateDraft() }
+        labels.onEdit { if (!updating) updateDraft() }
+        assignees.onEdit { if (!updating) updateDraft() }
         pickerSearch.onEdit { if (!updating) model.searchPicker(pickerSearch.text) }
         pickerList.setCheckBoxListListener { index, _ ->
             if (!updating) pickerList.getItemAt(index)?.let(model::togglePicked)
@@ -450,8 +456,15 @@ internal class IssueDetailsPanel(
                     editorHeading.text = number?.let { message("editor.issue", it.toString()) } ?: message("action.new")
                     title.syncText(draft.title)
                     description.syncText(draft.body)
+                    labels.syncNames(draft.labels)
+                    assignees.syncNames(draft.assignees)
+                    // Existing issues change labels and assignees with their pickers.
+                    val creating = number == null
+                    for (field in listOf(labelsLabel, labels, assigneesLabel, assignees)) field.isVisible = creating
                     title.isEditable = !state.writing
                     description.isEditable = !state.writing
+                    labels.isEditable = !state.writing
+                    assignees.isEditable = !state.writing
                     save.text = message(if (number == null) "action.create" else "action.save")
                     save.isEnabled = !state.writing && !state.needsSignIn && draft.title.isNotBlank()
                     cancel.isEnabled = !state.writing
@@ -539,6 +552,7 @@ internal class IssueDetailsPanel(
         edit.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editLabels.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editAssignees.isEnabled = editLabels.isEnabled
+        editMilestone.isEnabled = editLabels.isEnabled
         branch.isEnabled = !state.writing
         refresh.isEnabled = !state.writing && !state.detailLoading
         comment.syncText(state.commentDraft)
@@ -580,7 +594,34 @@ internal class IssueDetailsPanel(
         cancelPicker.isEnabled = !state.writing
     }
 
-    private fun updateDraft() = model.editDraft(IssueDraft(title.text, description.text))
+    /** Offers the open milestones and, if the issue has one, its removal; the choice is saved right away. */
+    private fun chooseMilestone() {
+        if (!model.canChangeMilestone) return
+        val issue = model.state.value.issue ?: return
+        val current = issue.milestone
+        val point = RelativePoint(editMilestone, Point(0, editMilestone.height))
+        scope.launch {
+            val options = suspend {
+                listOfNotNull(MilestoneFilter.None.takeIf { current != null }) +
+                    model.openMilestones().map(MilestoneFilter::Of)
+            }
+            val chosen = choose(point, options) { choice ->
+                val text = when (choice) {
+                    MilestoneFilter.None -> message("milestone.remove")
+                    is MilestoneFilter.Of -> choice.milestone.title
+                }
+                val selected = choice is MilestoneFilter.Of && choice.milestone.number == current?.number
+                PopupItemPresentation.Simple(text, if (selected) AllIcons.Actions.Checked else null)
+            } ?: return@launch
+            // The options load asynchronously; meanwhile another issue may have been opened.
+            if (model.state.value.issue?.number != issue.number) return@launch
+            model.setMilestone((chosen as? MilestoneFilter.Of)?.milestone?.number)
+        }
+    }
+
+    private fun updateDraft() = model.editDraft(
+        IssueDraft(title.text, description.text, splitNames(labels.text), splitNames(assignees.text))
+    )
 
     private fun runCommentAction(action: CommentAction, commentId: String) {
         when (action) {
@@ -599,6 +640,60 @@ internal class IssueDetailsPanel(
     private fun labelFor(key: String, field: JTextComponent) = JBLabel(message(key)).apply { labelFor = field }
 }
 
+/** Shows the options of the connected repository, so a repository change never offers stale values. */
+private suspend fun <T : Any> choose(
+    point: RelativePoint,
+    options: suspend () -> List<T>,
+    presentation: (T) -> PopupItemPresentation,
+): T? {
+    val loaded = flow {
+        emit(
+            try {
+                Result.success(options())
+            } catch (error: IssuesFailure) {
+                Result.failure(error)
+            }
+        )
+    }
+    return ChooserPopupUtil.showAsyncChooserPopup(point, loaded, presentation)
+}
+
+/** Short value of the milestone chip. */
+private fun milestoneName(filter: MilestoneFilter): String = when (filter) {
+    MilestoneFilter.None -> message("filter.milestone.none")
+    is MilestoneFilter.Of -> filter.milestone.title
+}
+
+/** Entry of the milestone filter popup; closed milestones are marked as such. */
+private fun milestoneChoice(filter: MilestoneFilter): String = when (filter) {
+    MilestoneFilter.None -> message("filter.milestone.none")
+    is MilestoneFilter.Of ->
+        if (filter.milestone.open) filter.milestone.title else message("filter.milestone.closed", filter.milestone.title)
+}
+
+/**
+ * Turns [rows] into [items] with few changes: rows matched by [key] stay in place or move, changed ones are replaced,
+ * missing ones are inserted and the rest is removed. Unlike replacing all rows, this keeps the scroll position.
+ */
+internal fun <T> syncRows(rows: DefaultListModel<T>, items: List<T>, key: (T) -> Any) {
+    val wanted = items.mapTo(HashSet(), key)
+    for (index in rows.size() - 1 downTo 0) {
+        if (key(rows[index]) !in wanted) rows.remove(index)
+    }
+    items.forEachIndexed { index, item ->
+        val itemKey = key(item)
+        when (val found = (index until rows.size()).firstOrNull { key(rows[it]) == itemKey }) {
+            index -> if (rows[index] != item) rows.set(index, item)
+            null -> rows.add(index, item)
+            else -> {
+                rows.remove(found)
+                rows.add(index, item)
+            }
+        }
+    }
+    if (rows.size() > items.size) rows.removeRange(items.size, rows.size() - 1)
+}
+
 private fun JTextComponent.onEdit(onChange: () -> Unit) {
     document.addDocumentListener(object : DocumentAdapter() {
         override fun textChanged(e: DocumentEvent) = onChange()
@@ -610,6 +705,11 @@ private fun JTextComponent.syncText(value: String) {
     val oldPosition = caretPosition
     text = value
     caretPosition = oldPosition.coerceAtMost(document.length)
+}
+
+/** Shows [names] comma-separated, unless the typed text already means the same, e.g. while a name is being typed. */
+private fun JTextComponent.syncNames(names: List<String>) {
+    if (splitNames(text) != names) syncText(names.joinToString(", "))
 }
 
 private fun button(key: String, action: () -> Unit) = JButton(message(key)).apply {
