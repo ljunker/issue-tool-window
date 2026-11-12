@@ -10,6 +10,8 @@ import kotlinx.coroutines.launch
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
+import kotlin.time.TimeMark
+import kotlin.time.TimeSource
 
 /** Labels and assignees are only sent when an issue is created; editing an issue changes them with the pickers. */
 internal data class IssueDraft(
@@ -115,6 +117,8 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private val current get() = mutableState.value
 
     private var gateway: IssuesGateway? = null
+    var connectionVersion: Long = 0
+        private set
     private var listJob: Job? = null
     private var detailJob: Job? = null
     private var writeJob: Job? = null
@@ -123,6 +127,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private val commentDrafts = mutableMapOf<Long, String>()
     private var labelOptions: List<String>? = null
     private var assigneeOptions: List<String>? = null
+    private var markdownIssuePage: Pair<TimeMark, List<Issue>>? = null
     private var milestoneOptions: List<Milestone>? = null
     private var templateOptions: List<IssueTemplate>? = null
     /** Whether the criteria restored on [connect] still need to be checked against the repository. */
@@ -158,9 +163,11 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         knownAssigned = null
         labelOptions = null
         assigneeOptions = null
+        markdownIssuePage = null
         milestoneOptions = null
         templateOptions = null
         this.gateway = gateway
+        connectionVersion++
         criteriaUnchecked = gateway != null && settings.criteria != IssueCriteria()
         mutableState.value = if (gateway == null) IssuesState() else IssuesState(
             connected = true,
@@ -206,6 +213,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         if (current.writing) return
         update { copy(writeError = null, feedback = null) }
         templateOptions = null
+        markdownIssuePage = null
         resetPolling()
         loadList()
         if (current.selected != null) loadDetail()
@@ -248,9 +256,60 @@ internal class IssuesModel(private val scope: CoroutineScope) {
      */
     suspend fun assigneeFilterOptions(): List<String> {
         val source = gateway ?: return emptyList()
-        val people = assigneeOptions ?: source.assignees().also { if (gateway === source) assigneeOptions = it }
+        val people = assignablePeople(source)
         val viewer = current.viewer ?: return people
         return listOf(viewer) + people.filterNot { it.equals(viewer, ignoreCase = true) }
+    }
+
+    private suspend fun assignablePeople(source: IssuesGateway): List<String> {
+        assigneeOptions?.let { return it }
+        val connection = connectionVersion
+        return source.assignees().also { if (connectionVersion == connection) assigneeOptions = it }
+    }
+
+    suspend fun markdownSuggestions(reference: MarkdownReference): List<MarkdownSuggestion> {
+        val source = gateway ?: return emptyList()
+        if (current.needsSignIn) return emptyList()
+        val connection = connectionVersion
+        val suggestions = try {
+            if (reference.marker == '@') {
+                assignablePeople(source).asSequence()
+                    .filter { it.startsWith(reference.prefix, ignoreCase = true) }
+                    .take(10)
+                    .map { MarkdownSuggestion("@$it") }
+                    .toList()
+            } else {
+                markdownIssueSuggestions(source, connection, reference.prefix)
+            }
+        } catch (_: IssuesFailure) {
+            return emptyList()
+        }
+        return suggestions.takeIf { connectionVersion == connection && !current.needsSignIn }.orEmpty()
+    }
+
+    private suspend fun markdownIssueSuggestions(
+        source: IssuesGateway,
+        connection: Long,
+        prefix: String,
+    ): List<MarkdownSuggestion> {
+        val recent = markdownIssuePage?.takeIf { it.first.elapsedNow() < 30.seconds }?.second
+            ?: source.issues(IssueFilter.ALL, IssueSort.RECENTLY_UPDATED, IssueCriteria(), null).items.also {
+                if (connectionVersion == connection) markdownIssuePage = TimeSource.Monotonic.markNow() to it
+            }
+        if (connectionVersion != connection) return emptyList()
+        val matches = recent.filter { it.number.toString().startsWith(prefix) }
+        val number = prefix.toLongOrNull()?.takeIf { it > 0 }
+        val exact = matches.firstOrNull { it.number == number } ?: number?.let {
+            try {
+                source.issue(it)
+            } catch (error: IssuesFailure) {
+                if (!error.missing) throw error
+                null
+            }
+        }
+        return (listOfNotNull(exact) + matches.filterNot { it.number == exact?.number }).take(10).map {
+            MarkdownSuggestion("#${it.number}", "#${it.number} ${it.title}")
+        }
     }
 
     /** Milestones of the connected repository, open and closed, loaded once per connection. */
