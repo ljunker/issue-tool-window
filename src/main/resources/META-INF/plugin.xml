@@ -19,6 +19,7 @@
       <li>See the issue of the current branch in the status bar and open it with one click</li>
       <li>Find issues with <b>Search Everywhere</b>: <code>#42</code> or text from title and description</li>
       <li>Open <code>#42</code> in code comments with Ctrl/Cmd+Click and from the Git log context menu</li>
+      <li>Find issues with <code>#</code> in commit messages and prefill a reference from the branch name</li>
     </ul>
     <p>Source code and issue tracker:
     <a href="https://github.com/ljunker/issue-tool-window">github.com/ljunker/issue-tool-window</a></p>
@@ -30,8 +31,11 @@
   <resource-bundle>messages.IssuesBundle</resource-bundle>
   <extensions defaultExtensionNs="com.intellij">
     <annotator language="" implementationClass="dev.issuetoolwindow.IssueCommentReferenceAnnotator"/>
+    <editorFactoryListener implementation="dev.issuetoolwindow.CommitIssueEditorListener"/>
     <fileEditorProvider implementation="dev.issuetoolwindow.IssueDetailsEditorProvider"/>
     <notificationGroup id="GitHub Issues" displayType="BALLOON" key="notification.group"/>
+    <projectConfigurable id="dev.issuetoolwindow.commitIssueSettings" parentId="project.propVCSSupport"
+      instance="dev.issuetoolwindow.CommitIssueConfigurable" bundle="messages.IssuesBundle" key="commitIssue.settings"/>
     <psi.referenceContributor language="" implementation="dev.issuetoolwindow.IssueCommentReferenceContributor"/>
     <searchEverywhereContributor implementation="dev.issuetoolwindow.IssueSearchEverywhereContributorFactory"/>
     <statusBarWidgetFactory id="dev.issuetoolwindow.BranchIssue" implementation="dev.issuetoolwindow.IssueStatusBarWidgetFactory"

@@ -24,6 +24,51 @@ import kotlin.test.assertTrue
 
 class IssuesTest {
     @Test
+    fun `commit suggestions filter by number and find an exact older issue`() = runBlocking {
+        val recent = Issue(420, "Recent closed issue", false, null, "", emptyList(), emptyList())
+        val older = recent.copy(number = 42, title = "Older issue")
+        val other = recent.copy(number = 21, title = "Different issue")
+        val gateway = object : StubGateway(recent) {
+            override suspend fun issues(
+                filter: IssueFilter,
+                sort: IssueSort,
+                criteria: IssueCriteria,
+                next: String?,
+            ): Page<Issue> {
+                assertEquals(IssueFilter.ALL, filter)
+                assertEquals(IssueSort.RECENTLY_UPDATED, sort)
+                return Page(listOf(recent, other), null)
+            }
+
+            override suspend fun issue(number: Long): Issue {
+                if (number == older.number) return older
+                throw IssuesFailure("Missing", missing = true)
+            }
+        }
+        val searchTitles: suspend (String) -> List<Issue> = { error("Unexpected title search for $it") }
+        assertEquals(listOf(recent, other), commitIssueSuggestions("", gateway, searchTitles))
+        assertEquals(listOf(recent), commitIssueSuggestions("4", gateway, searchTitles))
+        assertEquals(listOf(older, recent), commitIssueSuggestions("42", gateway, searchTitles))
+    }
+
+    @Test
+    fun `commit suggestions match recent titles and include older title results once`() = runBlocking {
+        val recent = Issue(42, "Fix Parser", true, null, "", emptyList(), emptyList())
+        val older = recent.copy(number = 11, title = "Parser regression")
+        val gateway = StubGateway(recent)
+        assertEquals(listOf(recent), commitIssueSuggestions("PA", gateway) { error("Too short for GitHub search") })
+        assertEquals(listOf(recent, older), commitIssueSuggestions("parser", gateway) { query ->
+            assertEquals("parser", query)
+            listOf(recent, older)
+        })
+
+        val repo = Repository("owner", "project")
+        val url = URI(issueSearchUrl(repo, "parser", IssueFilter.ALL, titlesOnly = true))
+        val query = URLDecoder.decode(url.rawQuery, Charsets.UTF_8)
+        assertTrue(query.startsWith("q=repo:owner/project is:issue in:title \"parser\"&"))
+    }
+
+    @Test
     fun `Markdown suggestions use assignable logins and unfiltered issues of the active repository`() = runBlocking {
         val recent = Issue(420, "Recent closed issue", false, null, "", emptyList(), emptyList())
         val older = recent.copy(number = 42, title = "Older issue")

@@ -51,6 +51,10 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
         next: String?,
     ): Page<Issue> = searchPages(next ?: issueSearchUrl(repository, query, filter, sort, criteria))
 
+    suspend fun searchTitles(query: String): List<Issue> = searchPages(
+        issueSearchUrl(repository, query, IssueFilter.ALL, IssueSort.RECENTLY_UPDATED, titlesOnly = true),
+    ).items
+
     private suspend fun searchPages(start: String): Page<Issue> =
         firstPageWithIssues(start) { url ->
             val page = request(GithubApiRequest.Get.JsonSearchPage(pageUrl(url), RestIssue::class.java, ACCEPT))
@@ -257,10 +261,11 @@ internal fun issueSearchUrl(
     filter: IssueFilter,
     sort: IssueSort = IssueSort.NEWEST,
     criteria: IssueCriteria = IssueCriteria(),
+    titlesOnly: Boolean = false,
 ): String {
     val terms = buildString {
         append("repo:${repository.fullName} is:issue")
-        if (query != null) append(" in:title,body")
+        if (query != null) append(if (titlesOnly) " in:title" else " in:title,body")
         if (filter != IssueFilter.ALL) append(" state:${filter.apiValue}")
         // Quoted values cannot add qualifiers that change the repository or status.
         criteria.label?.let { append(" label:").append(quoted(it)) }
