@@ -158,6 +158,13 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         if (current.selected != null) loadDetail()
     }
 
+    /** Reloads only the shown issue and its activity, e.g. from the issue tab while the tool window is hidden. */
+    fun refreshDetail() {
+        if (current.writing || current.selected == null) return
+        update { copy(writeError = null, feedback = null) }
+        loadDetail()
+    }
+
     fun filter(filter: IssueFilter) {
         if (current.writing || current.editor != null || filter == current.filter) return
         update { copy(filter = filter) }
@@ -296,7 +303,12 @@ internal class IssuesModel(private val scope: CoroutineScope) {
                 if (next == null) {
                     val issue = source.issue(number)
                     ensureActive()
-                    update { copy(issue = issue) }
+                    update {
+                        copy(
+                            issue = issue,
+                            issues = issues.copy(items = issues.items.map { if (it.number == number) issue else it }),
+                        )
+                    }
                 }
                 val page = source.activity(number, next)
                 ensureActive()

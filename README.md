@@ -55,7 +55,8 @@ Bei Bedarf IDEA anschließend neu starten.
 
 Ein Issue in der Liste auswählen, um Details und Kommentare im Editor-Tab **GitHub Issue** zu öffnen. Solange der Tab
 sichtbar ist, lädt er das Issue alle 30 Sekunden im Hintergrund nach; auf GitHub ergänzte Kommentare und Änderungen
-erscheinen so ohne erneutes Öffnen.
+erscheinen so ohne erneutes Öffnen. Der Refresh-Button am Ende der Aktionszeile im Tab lädt das Issue sofort neu, auch
+wenn das Tool Window geschlossen ist.
 
 | Aktion                                     | Wirkung                                                                                                                                 |
 |--------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------|
