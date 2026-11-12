@@ -6,6 +6,9 @@ import com.intellij.icons.AllIcons
 import com.intellij.ide.ActivityTracker
 import com.intellij.ide.BrowserUtil
 import com.intellij.ide.util.PropertiesComponent
+import com.intellij.notification.NotificationAction
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -16,9 +19,11 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorOpenRequest
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.project.DumbAwareToggleAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.popup.JBPopupFactory
+import com.intellij.openapi.util.text.StringUtil
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
@@ -38,6 +43,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -149,12 +155,42 @@ private class IssuesToolWindow(private val project: Project) : Disposable, Issue
                 ActivityTracker.getInstance().inc()
             }
         }
+        // The list stays current while it is visible; a hidden tool window sends no requests.
+        scope.launch {
+            while (true) {
+                delay(model.pollInterval)
+                if (connectedTo == null || !list.panel.isShowing) continue
+                model.pollList()
+                if (notifyAssigned) model.pollAssigned(::notifyAssigned) else model.forgetAssigned()
+            }
+        }
+    }
+
+    private var notifyAssigned: Boolean
+        get() = PropertiesComponent.getInstance().getBoolean(NOTIFY_ASSIGNED_KEY, true)
+        set(value) = PropertiesComponent.getInstance().setValue(NOTIFY_ASSIGNED_KEY, value, true)
+
+    /** Tells about [issues] newly assigned to the active account, each with a link to open it in the issue tab. */
+    private fun notifyAssigned(issues: List<Issue>) {
+        val repo = connectedTo?.first ?: return
+        val group = NotificationGroupManager.getInstance().getNotificationGroup(NOTIFICATION_GROUP)
+        for (issue in issues) {
+            group.createNotification(
+                message("notification.assigned.title", repo.fullName),
+                message("notification.assigned", issue.number, StringUtil.escapeXmlEntities(issue.title)),
+                NotificationType.INFORMATION,
+            ).addAction(
+                NotificationAction.createSimpleExpiring(message("notification.assigned.open")) {
+                    openIssue(repo, issue.number)
+                }
+            ).notify(project)
+        }
     }
 
     fun attach(toolWindow: ToolWindow, content: Content) {
         this.content = content
         toolWindow.setTitleActions(listOf(NewIssueAction(), RefreshAction()))
-        toolWindow.setAdditionalGearActions(DefaultActionGroup(ChangeRepositoryAction()))
+        toolWindow.setAdditionalGearActions(DefaultActionGroup(ChangeRepositoryAction(), NotifyAssignedAction()))
         updateTitle()
         navigator.register(this)?.let { (target, number) -> openIssue(target, number) }
     }
@@ -414,6 +450,16 @@ private class IssuesToolWindow(private val project: Project) : Disposable, Issue
         override fun actionPerformed(e: AnActionEvent) = changeRepository()
     }
 
+    private inner class NotifyAssignedAction : DumbAwareToggleAction(message("action.notifyAssigned")) {
+        override fun getActionUpdateThread() = ActionUpdateThread.EDT
+
+        override fun isSelected(e: AnActionEvent) = notifyAssigned
+
+        override fun setSelected(e: AnActionEvent, state: Boolean) {
+            notifyAssigned = state
+        }
+    }
+
     private data class RemoteContext(
         val repositories: List<Repository>,
         val remoteNames: Map<String, String>,
@@ -425,5 +471,8 @@ private class IssuesToolWindow(private val project: Project) : Disposable, Issue
         const val SELECT_CARD = "select"
         const val ISSUES_CARD = "issues"
         const val AVATAR_SIZE = 24
+        const val NOTIFICATION_GROUP = "GitHub Issues"
+        /** Application-wide, like other notification preferences. */
+        const val NOTIFY_ASSIGNED_KEY = "dev.issuetoolwindow.notifyAssigned"
     }
 }

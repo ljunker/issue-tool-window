@@ -1742,6 +1742,158 @@ class IssuesTest {
         assertNull(RestFile("text", "none").text())
     }
 
+    @Test
+    fun `background list update keeps selection and loaded pages and skips while editing`() = runBlocking {
+        fun issue(number: Long, title: String = "Issue $number", assignees: List<String> = emptyList()) =
+            Issue(number, title, true, null, "", emptyList(), assignees)
+        val gateway = PagedGateway(listOf(issue(5), issue(4), issue(3), issue(2), issue(1)))
+        val model = IssuesModel(this)
+        val states = mutableListOf<IssuesState>()
+        val watcher = launch { model.state.collect { states += it } }
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.moreIssues()
+        await { !model.state.value.listLoading && model.state.value.issues.items.size == 4 }
+        model.select(4)
+        await { !model.state.value.detailLoading }
+        states.clear()
+        gateway.requests.clear()
+
+        gateway.all = listOf(issue(6), issue(5), issue(4, "Renamed elsewhere"), issue(3), issue(2), issue(1))
+        model.pollList()
+        await { model.state.value.issues.items.firstOrNull()?.number == 6L }
+        assertEquals(listOf(null, "2"), gateway.requests)
+        assertEquals(listOf(6L, 5L, 4L, 3L), model.state.value.issues.items.map(Issue::number))
+        assertEquals("4", model.state.value.issues.next)
+        assertEquals("Renamed elsewhere", model.state.value.issues.items[2].title)
+        assertEquals(4L, model.state.value.selected)
+        assertTrue(states.none { it.listLoading })
+        watcher.cancel()
+
+        gateway.requests.clear()
+        model.startCreate()
+        model.pollList()
+        repeat(5) { yield() }
+        assertEquals(emptyList(), gateway.requests)
+    }
+
+    @Test
+    fun `background failures stay hidden and lengthen the poll interval until a success or refresh`() = runBlocking {
+        val gateway = PagedGateway(listOf(Issue(1, "Issue", true, null, "", emptyList(), emptyList())))
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        assertEquals(IssuesModel.POLL_INTERVAL, model.pollInterval)
+
+        gateway.failure = IssuesFailure("Rate limit")
+        model.pollList()
+        await { model.pollInterval == IssuesModel.POLL_INTERVAL * 2 }
+        model.pollList()
+        await { model.pollInterval == IssuesModel.POLL_INTERVAL * 4 }
+        assertNull(model.state.value.listError)
+        assertEquals(1, model.state.value.issues.items.size)
+        repeat(4) {
+            model.pollList()
+            repeat(5) { yield() }
+        }
+        assertEquals(IssuesModel.MAX_POLL_INTERVAL, model.pollInterval)
+
+        gateway.failure = null
+        model.pollList()
+        await { model.pollInterval == IssuesModel.POLL_INTERVAL }
+
+        gateway.failure = IssuesFailure("Bad credentials", offerSignIn = true)
+        model.pollList()
+        await { model.pollInterval == IssuesModel.POLL_INTERVAL * 2 }
+        gateway.failure = null
+        gateway.requests.clear()
+        model.pollList()
+        model.pollAssigned { error("Unexpected notification") }
+        repeat(5) { yield() }
+        assertEquals(emptyList(), gateway.requests)
+        assertNull(model.state.value.listError)
+
+        model.refresh()
+        assertEquals(IssuesModel.POLL_INTERVAL, model.pollInterval)
+        await { !model.state.value.listLoading }
+        gateway.requests.clear()
+        model.pollList()
+        await { gateway.requests.isNotEmpty() }
+    }
+
+    @Test
+    fun `newly assigned issues are reported once, not at the first check and not when assigned in the tool window`() =
+        runBlocking {
+            fun issue(number: Long, vararg assignees: String) =
+                Issue(number, "Issue $number", true, null, "", emptyList(), assignees.toList())
+            val gateway = object : PagedGateway(listOf(issue(1, "me"), issue(2))) {
+                override suspend fun changeAssignees(number: Long, add: Collection<String>, remove: Collection<String>) =
+                    AssigneeChange(issue(number, *add.toTypedArray()).also { all = all.map { old -> if (old.number == number) it else old } })
+
+                override suspend fun assignees() = listOf("me", "alice")
+            }
+            val model = IssuesModel(this)
+            model.connect(gateway, "me")
+            await { !model.state.value.listLoading }
+            val reported = mutableListOf<List<Long>>()
+            suspend fun check() {
+                val requests = gateway.requests.size
+                model.pollAssigned { issues -> reported += issues.map(Issue::number) }
+                await { gateway.requests.size > requests }
+                repeat(5) { yield() }
+            }
+
+            check()
+            assertEquals(emptyList(), reported)
+
+            gateway.all = listOf(issue(3, "Me"), issue(1, "me"), issue(2))
+            check()
+            assertEquals(listOf(listOf(3L)), reported)
+            check()
+            assertEquals(1, reported.size)
+
+            model.select(2)
+            await { !model.state.value.detailLoading }
+            model.startAssignees()
+            await { model.state.value.picker?.loading == false }
+            model.assignMe()
+            await { !model.state.value.writing && !model.state.value.listLoading && !model.state.value.detailLoading }
+            check()
+            assertEquals(1, reported.size)
+
+            model.forgetAssigned()
+            gateway.all = gateway.all + issue(4, "me")
+            check()
+            assertEquals(1, reported.size)
+        }
+
+    @Test
+    fun `list rows change only where the issues differ`() {
+        data class Row(val id: Int, val text: String = "row $id")
+        val rows = javax.swing.DefaultListModel<Row>()
+        rows.addAll(listOf(Row(1), Row(2), Row(3), Row(4)))
+        val changes = mutableListOf<String>()
+        rows.addListDataListener(object : javax.swing.event.ListDataListener {
+            override fun intervalAdded(e: javax.swing.event.ListDataEvent) { changes += "add ${e.index0}" }
+            override fun intervalRemoved(e: javax.swing.event.ListDataEvent) { changes += "remove ${e.index0}" }
+            override fun contentsChanged(e: javax.swing.event.ListDataEvent) { changes += "set ${e.index0}" }
+        })
+        fun sync(vararg items: Row): List<Row> {
+            changes.clear()
+            syncRows(rows, items.toList(), Row::id)
+            return (0 until rows.size()).map(rows::get)
+        }
+
+        assertEquals(listOf(Row(1), Row(2), Row(3), Row(4)), sync(Row(1), Row(2), Row(3), Row(4)))
+        assertEquals(emptyList(), changes)
+        assertEquals(listOf(Row(0), Row(1), Row(2, "renamed"), Row(3), Row(4)), sync(Row(0), Row(1), Row(2, "renamed"), Row(3), Row(4)))
+        assertEquals(listOf("add 0", "set 2"), changes)
+        assertEquals(listOf(Row(3), Row(0), Row(1), Row(4)), sync(Row(3), Row(0), Row(1), Row(4)))
+        assertEquals(listOf("remove 2", "remove 2", "add 0"), changes)
+        assertEquals(listOf(Row(4)), sync(Row(4)))
+        assertEquals(emptyList(), sync())
+    }
+
     private suspend fun await(condition: () -> Boolean) {
         withTimeout(3_000) { while (!condition()) yield() }
     }
@@ -1780,6 +1932,23 @@ class IssuesTest {
 
         override suspend fun milestones(): List<Milestone> = error("Unexpected milestone list")
         override suspend fun setMilestone(number: Long, milestone: Long?): Issue = error("Unexpected milestone change")
+    }
+
+    /** Pages of [pageSize] issues with the start index as next token; [failure] fails every list request. */
+    private open class PagedGateway(var all: List<Issue>, private val pageSize: Int = 2) : StubGateway(all.first()) {
+        val requests = mutableListOf<String?>()
+        var failure: IssuesFailure? = null
+
+        override suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?): Page<Issue> {
+            failure?.let { throw it }
+            requests += next
+            val matching = all.filter { filter.includes(it) && criteria.includes(it) }
+            val start = next?.toInt() ?: 0
+            val end = (start + pageSize).coerceAtMost(matching.size)
+            return Page(matching.subList(start, end), end.takeIf { it < matching.size }?.toString())
+        }
+
+        override suspend fun issue(number: Long) = all.first { it.number == number }
     }
 
     private fun response(json: String, next: String? = null): GithubApiResponse = object : GithubApiResponse {

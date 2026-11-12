@@ -8,6 +8,8 @@
     account already configured for the <b>Pull Requests</b> tool window.</p>
     <ul>
       <li>Filter by status, label and assignee (including issues assigned to you) and search in title and description</li>
+      <li>Keep the issue list up to date in the background while the tool window is visible and get notified about
+      issues newly assigned to you</li>
       <li>Open an issue directly with <code>#42</code></li>
       <li>Read issue details, Markdown descriptions, comments and activity in an editor tab</li>
       <li>Create and edit issues, post, edit and delete comments, close and reopen issues</li>
@@ -29,6 +31,7 @@
   <extensions defaultExtensionNs="com.intellij">
     <annotator language="" implementationClass="dev.issuetoolwindow.IssueCommentReferenceAnnotator"/>
     <fileEditorProvider implementation="dev.issuetoolwindow.IssueDetailsEditorProvider"/>
+    <notificationGroup id="GitHub Issues" displayType="BALLOON" key="notification.group"/>
     <psi.referenceContributor language="" implementation="dev.issuetoolwindow.IssueCommentReferenceContributor"/>
     <searchEverywhereContributor implementation="dev.issuetoolwindow.IssueSearchEverywhereContributorFactory"/>
     <statusBarWidgetFactory id="dev.issuetoolwindow.BranchIssue" implementation="dev.issuetoolwindow.IssueStatusBarWidgetFactory"

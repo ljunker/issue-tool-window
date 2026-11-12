@@ -7,6 +7,9 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
 
 /** Labels and assignees are only sent when an issue is created; editing an issue changes them with the pickers. */
 internal data class IssueDraft(
@@ -116,6 +119,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private var detailJob: Job? = null
     private var writeJob: Job? = null
     private var pickerJob: Job? = null
+    private var assignedJob: Job? = null
     private val commentDrafts = mutableMapOf<Long, String>()
     private var labelOptions: List<String>? = null
     private var assigneeOptions: List<String>? = null
@@ -123,6 +127,20 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private var templateOptions: List<IssueTemplate>? = null
     /** Whether the criteria restored on [connect] still need to be checked against the repository. */
     private var criteriaUnchecked = false
+    /** Background updates that failed in a row since the last success, connection or manual refresh. */
+    private var pollFailures = 0
+    /** Set when a background update found the credentials missing or invalid; only a refresh or connection clears it. */
+    private var pollNeedsSignIn = false
+    /** Open issues known to be assigned to the active account; `null` until the first check after connecting. */
+    private var knownAssigned: Set<Long>? = null
+
+    /**
+     * Time until the next background update: [POLL_INTERVAL], doubled with every background failure in a row up to
+     * [MAX_POLL_INTERVAL].
+     */
+    val pollInterval: Duration
+        get() = if (pollFailures == 0) POLL_INTERVAL
+        else (POLL_INTERVAL * (1 shl pollFailures.coerceAtMost(MAX_BACKOFF_STEPS))).coerceAtMost(MAX_POLL_INTERVAL)
 
     /**
      * Connects to [gateway] and shows its list with [settings]. A saved label, assignee or milestone that the repository
@@ -134,7 +152,10 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         detailJob?.cancel()
         writeJob?.cancel()
         pickerJob?.cancel()
+        assignedJob?.cancel()
         commentDrafts.clear()
+        resetPolling()
+        knownAssigned = null
         labelOptions = null
         assigneeOptions = null
         milestoneOptions = null
@@ -185,6 +206,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         if (current.writing) return
         update { copy(writeError = null, feedback = null) }
         templateOptions = null
+        resetPolling()
         loadList()
         if (current.selected != null) loadDetail()
     }
@@ -408,6 +430,102 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     }
 
     /**
+     * Reloads the list in the background with the active status, order, filters and search, so changes made elsewhere
+     * appear without a loading indicator. Reloads at least as many issues as are shown, so the selection, scroll
+     * position and loaded pages stay. Skips while anything else is loaded, written or edited and while the list shows
+     * an error. A failure keeps the shown list and makes [pollInterval] longer instead of showing an error.
+     */
+    fun pollList() {
+        val source = gateway ?: return
+        val state = current
+        if (pollNeedsSignIn || !state.connected || criteriaUnchecked) return
+        if (state.writing || state.editor != null || state.listLoading || state.listError != null) return
+        if (listJob?.isActive == true) return
+        val filter = state.filter
+        val sort = state.sort
+        val criteria = state.criteria
+        val query = state.searchQuery
+        val shown = state.issues.items.size
+        listJob = scope.launch {
+            try {
+                suspend fun load(next: String?) = if (query == null) source.issues(filter, sort, criteria, next)
+                else source.search(query, filter, sort, criteria, next)
+                var page = load(null)
+                val items = page.items.toMutableList()
+                while (page.next != null && items.size < shown) {
+                    page = load(page.next)
+                    items += page.items
+                }
+                ensureActive()
+                pollSucceeded()
+                val now = current
+                if (now.filter != filter || now.sort != sort || now.criteria != criteria || now.searchQuery != query) {
+                    return@launch
+                }
+                if (now.writing || now.listLoading) return@launch
+                update { copy(issues = Page(items.distinctBy(Issue::number), page.next)) }
+            } catch (error: IssuesFailure) {
+                ensureActive()
+                pollFailed(error)
+            }
+        }
+    }
+
+    /**
+     * Checks in the background which open issues are assigned to the active account and passes those that were not
+     * assigned at the previous check to [assigned]. The first check after connecting only notes the current ones. Only
+     * the most recently updated issues are checked, as assigning an issue updates it.
+     */
+    fun pollAssigned(assigned: (List<Issue>) -> Unit) {
+        val source = gateway ?: return
+        val viewer = current.viewer ?: return
+        if (pollNeedsSignIn || !current.connected || assignedJob?.isActive == true) return
+        assignedJob = scope.launch {
+            try {
+                val page = source.issues(IssueFilter.OPEN, IssueSort.RECENTLY_UPDATED, IssueCriteria(assignee = viewer), null)
+                ensureActive()
+                pollSucceeded()
+                val known = knownAssigned
+                // Issues stay known once seen, so one that drops off the first page does not count as new later.
+                knownAssigned = known.orEmpty() + page.items.map(Issue::number)
+                if (known == null) return@launch
+                val fresh = page.items.filter { it.number !in known }
+                if (fresh.isNotEmpty()) assigned(fresh)
+            } catch (error: IssuesFailure) {
+                ensureActive()
+                pollFailed(error)
+            }
+        }
+    }
+
+    /** Forgets the assigned issues, e.g. while notifications are off, so the next check only notes them again. */
+    fun forgetAssigned() {
+        assignedJob?.cancel()
+        knownAssigned = null
+    }
+
+    /** Issues the active account assigns to itself in the tool window are no news for it. */
+    private fun noteAssigned(issue: Issue) {
+        val viewer = current.viewer ?: return
+        val known = knownAssigned ?: return
+        if (issue.open && issue.assignees.any { it.equals(viewer, ignoreCase = true) }) knownAssigned = known + issue.number
+    }
+
+    private fun pollSucceeded() {
+        pollFailures = 0
+    }
+
+    private fun pollFailed(error: IssuesFailure) {
+        if (error.offerSignIn) pollNeedsSignIn = true
+        pollFailures++
+    }
+
+    private fun resetPolling() {
+        pollFailures = 0
+        pollNeedsSignIn = false
+    }
+
+    /**
      * Issue templates of the connected repository, loaded once per connection or [refresh]. A failure counts as no
      * templates, so creating an issue works as without them.
      */
@@ -462,6 +580,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
 
     private fun createIssue(title: String, body: String?, labels: List<String>, assignees: List<String>) {
         write({ create(title, body, labels, assignees) }) { created ->
+            noteAssigned(created)
             detailJob?.cancel()
             update {
                 copy(
@@ -723,6 +842,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         ignoredKey: String,
     ) {
         pickerJob?.cancel()
+        noteAssigned(changed)
         val ignored = (added.filter { it !in stored } + removed.filter { it in stored }).filter { it !in failed }
         val problems = failed.map { (name, error) -> message("error.changeFailed", name, error.message.orEmpty()) } +
             listOfNotNull(ignored.takeIf { it.isNotEmpty() }?.let { message(ignoredKey, it.joinToString(", ")) })
@@ -773,5 +893,11 @@ internal class IssuesModel(private val scope: CoroutineScope) {
 
     private inline fun update(transform: IssuesState.() -> IssuesState) {
         mutableState.value = current.transform()
+    }
+
+    companion object {
+        val POLL_INTERVAL = 60.seconds
+        val MAX_POLL_INTERVAL = 15.minutes
+        private const val MAX_BACKOFF_STEPS = 4
     }
 }

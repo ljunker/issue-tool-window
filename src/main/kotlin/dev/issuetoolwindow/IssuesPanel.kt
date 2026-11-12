@@ -223,8 +223,8 @@ internal class IssuesPanel(
 
             if (renderedIssues != state.issues.items) {
                 renderedIssues = state.issues.items
-                issueRows.clear()
-                issueRows.addAll(renderedIssues)
+                // Changing only what differs keeps the scroll position when the list is updated in the background.
+                syncRows(issueRows, renderedIssues, Issue::number)
             }
             issueList.selectedIndex = renderedIssues.indexOfFirst { it.number == state.selected }
             issueList.emptyText.text = when {
@@ -669,6 +669,29 @@ private fun milestoneChoice(filter: MilestoneFilter): String = when (filter) {
     MilestoneFilter.None -> message("filter.milestone.none")
     is MilestoneFilter.Of ->
         if (filter.milestone.open) filter.milestone.title else message("filter.milestone.closed", filter.milestone.title)
+}
+
+/**
+ * Turns [rows] into [items] with few changes: rows matched by [key] stay in place or move, changed ones are replaced,
+ * missing ones are inserted and the rest is removed. Unlike replacing all rows, this keeps the scroll position.
+ */
+internal fun <T> syncRows(rows: DefaultListModel<T>, items: List<T>, key: (T) -> Any) {
+    val wanted = items.mapTo(HashSet(), key)
+    for (index in rows.size() - 1 downTo 0) {
+        if (key(rows[index]) !in wanted) rows.remove(index)
+    }
+    items.forEachIndexed { index, item ->
+        val itemKey = key(item)
+        when (val found = (index until rows.size()).firstOrNull { key(rows[it]) == itemKey }) {
+            index -> if (rows[index] != item) rows.set(index, item)
+            null -> rows.add(index, item)
+            else -> {
+                rows.remove(found)
+                rows.add(index, item)
+            }
+        }
+    }
+    if (rows.size() > items.size) rows.removeRange(items.size, rows.size() - 1)
 }
 
 private fun JTextComponent.onEdit(onChange: () -> Unit) {

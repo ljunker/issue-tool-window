@@ -10,6 +10,8 @@ GitHub-Konto, das in IDEA bereits für **Pull Requests** eingerichtet ist.
 - **Filter** nach Status (Open, Closed, All), Label, Assignee und Milestone – inklusive **Assigned to me** und
   **No milestone**
 - **Volltextsuche** in Titel und Beschreibung; `#42` öffnet Issue 42 direkt
+- **Liste aktualisiert sich im Hintergrund**, solange das Tool Window sichtbar ist; optional eine Benachrichtigung bei
+  neu zugewiesenen Issues
 - **Issue-Details** mit Kommentaren in einem Editor-Tab, der sich alle 30 Sekunden im Hintergrund aktualisiert
 - **Issues anlegen und bearbeiten**: Titel und Markdown-Beschreibung, Labels, Assignees, Milestone
 - **Issue-Vorlagen beim Anlegen**: Markdown-Vorlagen aus `.github/ISSUE_TEMPLATE/` füllen das neue Issue vor
@@ -60,6 +62,12 @@ Bei Bedarf IDEA anschließend neu starten.
   Neustart. Gibt es ein gespeichertes Label, eine Person oder einen Milestone im Repository nicht mehr, entfällt dieser
   Filter. Der Suchtext wird
   nicht gespeichert.
+- Solange das Tool Window sichtbar ist, lädt die Liste jede Minute im Hintergrund nach. Auswahl, Scrollposition, Filter,
+  Suche und bereits nachgeladene Seiten bleiben erhalten. Bei verborgenem Tool Window werden keine Anfragen gesendet.
+  Schlägt das Nachladen fehl, etwa beim Anfragelimit von GitHub oder ohne Verbindung, bleibt die Liste stehen und der
+  nächste Versuch kommt später (bis zu 15 Minuten); **Refresh** versucht es sofort.
+- Wird dem aktiven Konto ein offenes Issue neu zugewiesen, meldet die IDE das mit einer Benachrichtigung, über die sich
+  das Issue öffnen lässt. Abschalten im Zahnrad-Menü des Tool Windows über **Notify About Issues Assigned to Me**.
 
 ### Issues ansehen und bearbeiten
 
