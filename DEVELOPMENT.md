@@ -71,6 +71,16 @@ letzten Tag `vX.Y.Z` ab:
 | `fix:` oder `perf:`                             | Patch          |
 | nur andere Typen (`docs:`, `chore:`, `ci:`, …)  | kein Release   |
 
+Eine bestimmte Version lässt sich mit dem Footer `Release-As: X.Y.Z` in einer eigenen Zeile des Commit-Bodys festlegen,
+z. B. mit einem leeren Commit auf `develop`:
+
+```sh
+git commit --allow-empty -m "chore: Release 1.0.0" -m "Release-As: 1.0.0"
+```
+
+Gibt es seit dem letzten Tag mehrere solche Footer, gilt der neueste. Die Version muss größer als die des letzten Tags
+sein, sonst bricht der Workflow ab. Ein manuell gewählter Versionssprung (siehe unten) hat Vorrang vor dem Footer.
+
 Bei einem Release testet, verifiziert und signiert der Workflow das Plugin, veröffentlicht es im JetBrains
 Marketplace und legt Tag und GitHub-Release mit ZIP und Release-Notes an. Die Änderungsliste erscheint auch als
 Change-Notes im Marketplace. Über **Actions → Release → Run workflow** (Branch `main`) lässt sich ein Release mit
