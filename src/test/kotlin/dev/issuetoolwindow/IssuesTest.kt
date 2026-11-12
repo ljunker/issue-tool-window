@@ -328,6 +328,230 @@ class IssuesTest {
     }
 
     @Test
+    fun `GitHub JSON maps the milestone of issues and orders milestones open first`() {
+        val issues = GithubApiRequest.Get.JsonPage("https://api.github.com/example", RestIssue::class.java)
+        val parsed = issues.extractResult(
+            response(
+                """[{"number":7,"title":"Planned","state":"open","milestone":{"number":3,"title":"v1.0","state":"open"}},""" +
+                    """{"number":8,"title":"Unplanned","state":"open","milestone":null}]"""
+            )
+        ).items.map(RestIssue::toIssue)
+        assertEquals(listOf(Milestone(3, "v1.0"), null), parsed.map(Issue::milestone))
+
+        val milestones = GithubApiRequest.Get.JsonPage("https://api.github.com/example", RestMilestone::class.java)
+            .extractResult(
+                response(
+                    """[{"number":1,"title":"v0.9","state":"closed"},{"number":3,"title":"b","state":"open"},""" +
+                        """{"number":2,"title":"A","state":"open"},{"number":2,"title":"A","state":"open"}]"""
+                )
+            ).items.map(RestMilestone::toMilestone)
+        assertEquals(
+            listOf(Milestone(2, "A"), Milestone(3, "b"), Milestone(1, "v0.9", open = false)),
+            milestonesForPicker(milestones),
+        )
+    }
+
+    @Test
+    fun `issue list and search URLs filter by milestone number, title or no milestone`() {
+        val base = "https://api.github.com/repos/owner/project/issues"
+        val release = MilestoneFilter.Of(Milestone(12, "Release \"2\""))
+        assertEquals(
+            "$base?state=open&sort=created&direction=desc&labels=bug&milestone=12&per_page=30",
+            issueListUrl(base, IssueFilter.OPEN, IssueSort.NEWEST, IssueCriteria("bug", milestone = release)),
+        )
+        assertEquals(
+            "$base?state=all&sort=created&direction=desc&milestone=none&per_page=30",
+            issueListUrl(base, IssueFilter.ALL, IssueSort.NEWEST, IssueCriteria(milestone = MilestoneFilter.None)),
+        )
+        val repo = Repository("owner", "project")
+        fun terms(criteria: IssueCriteria, query: String?) = URLDecoder.decode(
+            URI(issueSearchUrl(repo, query, IssueFilter.OPEN, IssueSort.NEWEST, criteria))
+                .rawQuery.substringAfter("q=").substringBefore('&'),
+            Charsets.UTF_8,
+        )
+        assertEquals(
+            "repo:owner/project is:issue in:title,body state:open assignee:\"bob\" milestone:\"Release  2 \" \"crash\"",
+            terms(IssueCriteria(assignee = "bob", milestone = release), "crash"),
+        )
+        assertEquals(
+            "repo:owner/project is:issue state:open no:milestone",
+            terms(IssueCriteria(milestone = MilestoneFilter.None), null),
+        )
+    }
+
+    @Test
+    fun `setting a milestone sends its number and removing it sends an explicit null`() {
+        val url = "https://api.github.com/repos/owner/project/issues/4"
+        assertEquals("""{"milestone":12}""", setMilestoneRequest(url, 12).body)
+        assertEquals("""{"milestone":null}""", setMilestoneRequest(url, null).body)
+        assertEquals(url, setMilestoneRequest(url, null).url)
+    }
+
+    @Test
+    fun `milestone criteria match issues of one milestone or without milestone`() {
+        val planned = Issue(1, "Planned", true, null, "", listOf("bug"), emptyList(), milestone = Milestone(3, "v1.0"))
+        val unplanned = planned.copy(number = 2, milestone = null)
+        val v1 = MilestoneFilter.Of(Milestone(3, "renamed", open = false))
+        assertTrue(IssueCriteria(milestone = v1).includes(planned))
+        assertFalse(IssueCriteria(milestone = v1).includes(unplanned))
+        assertFalse(IssueCriteria(milestone = MilestoneFilter.None).includes(planned))
+        assertTrue(IssueCriteria(milestone = MilestoneFilter.None).includes(unplanned))
+        assertFalse(IssueCriteria("docs", milestone = v1).includes(planned))
+    }
+
+    @Test
+    fun `milestone filters are saved with number and title and read back`() {
+        val store = mutableMapOf<String, String>()
+        val write: (String, String?) -> Unit = { key, value ->
+            if (value == null) store.remove(key) else store[key] = value
+        }
+        val release = IssueListSettings(criteria = IssueCriteria(milestone = MilestoneFilter.Of(Milestone(12, "v2.0"))))
+        writeListSettings(release, write)
+        assertEquals(release, readListSettings(store::get))
+
+        val none = IssueListSettings(criteria = IssueCriteria(milestone = MilestoneFilter.None))
+        writeListSettings(none, write)
+        assertEquals(mapOf("dev.issuetoolwindow.milestone" to "none"), store)
+        assertEquals(none, readListSettings(store::get))
+
+        writeListSettings(IssueListSettings(), write)
+        assertTrue(store.isEmpty())
+        val broken = mapOf("dev.issuetoolwindow.milestone" to "x", "dev.issuetoolwindow.milestone.title" to "v2.0")
+        assertEquals(IssueListSettings(), readListSettings(broken::get))
+        val untitled = mapOf("dev.issuetoolwindow.milestone" to "12")
+        assertEquals(IssueListSettings(), readListSettings(untitled::get))
+    }
+
+    @Test
+    fun `milestone filter combines with label and search and a saved milestone is checked by number`() = runBlocking {
+        val issue = Issue(1, "Issue", true, null, "", listOf("bug"), emptyList())
+        val listCalls = mutableListOf<IssueCriteria>()
+        val searchCalls = mutableListOf<IssueCriteria>()
+        val gateway = object : StubGateway(issue) {
+            var failOptions = false
+            var loads = 0
+
+            override suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?): Page<Issue> {
+                listCalls += criteria
+                return Page(emptyList(), null)
+            }
+
+            override suspend fun search(
+                query: String,
+                filter: IssueFilter,
+                sort: IssueSort,
+                criteria: IssueCriteria,
+                next: String?,
+            ): Page<Issue> {
+                searchCalls += criteria
+                return Page(emptyList(), null)
+            }
+
+            override suspend fun milestones(): List<Milestone> {
+                loads++
+                if (failOptions) throw IssuesFailure("offline")
+                return listOf(Milestone(3, "v1.0 renamed"), Milestone(1, "v0.9", open = false))
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.filterLabel("bug")
+        await { !model.state.value.listLoading }
+        val v1 = MilestoneFilter.Of(Milestone(3, "v1.0 renamed"))
+        model.filterMilestone(v1)
+        await { !model.state.value.listLoading }
+        model.editSearch("crash")
+        model.search()
+        await { !model.state.value.listLoading }
+        model.filterMilestone(MilestoneFilter.None)
+        await { !model.state.value.listLoading }
+        assertEquals(listOf(IssueCriteria("bug", milestone = v1), IssueCriteria("bug", milestone = MilestoneFilter.None)), searchCalls)
+        model.filterMilestone(null)
+        await { !model.state.value.listLoading }
+        assertEquals(IssueCriteria("bug"), model.state.value.criteria)
+        assertEquals(listOf(Milestone(3, "v1.0 renamed"), Milestone(1, "v0.9", open = false)), model.milestoneFilterOptions())
+        assertEquals(listOf(Milestone(3, "v1.0 renamed"), Milestone(1, "v0.9", open = false)), model.milestoneFilterOptions())
+        assertEquals(1, gateway.loads)
+
+        listCalls.clear()
+        val saved = { number: Long -> IssueListSettings(criteria = IssueCriteria(milestone = MilestoneFilter.Of(Milestone(number, "v1.0")))) }
+        model.connect(gateway, settings = saved(3))
+        await { !model.state.value.listLoading }
+        model.connect(gateway, settings = saved(99))
+        await { !model.state.value.listLoading }
+        model.connect(gateway, settings = IssueListSettings(criteria = IssueCriteria(milestone = MilestoneFilter.None)))
+        await { !model.state.value.listLoading }
+        gateway.failOptions = true
+        model.connect(gateway, settings = saved(99))
+        await { !model.state.value.listLoading }
+        assertEquals(
+            listOf(
+                IssueCriteria(milestone = v1),
+                IssueCriteria(),
+                IssueCriteria(milestone = MilestoneFilter.None),
+                saved(99).criteria,
+            ),
+            listCalls,
+        )
+    }
+
+    @Test
+    fun `setting and removing a milestone shows the stored issue and leaves a filtered list`() = runBlocking {
+        val v1 = Milestone(3, "v1.0")
+        val initial = Issue(4, "Issue", true, null, "", emptyList(), emptyList(), milestone = v1)
+        val changes = mutableListOf<Long?>()
+        val gateway = object : StubGateway(initial) {
+            override suspend fun milestones() = listOf(Milestone(5, "v2.0"), v1, Milestone(1, "old", open = false))
+
+            override suspend fun setMilestone(number: Long, milestone: Long?): Issue {
+                changes += milestone
+                issue = issue.copy(milestone = milestones().firstOrNull { it.number == milestone })
+                return issue
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        model.filterMilestone(MilestoneFilter.Of(v1))
+        await { !model.state.value.listLoading }
+        model.select(initial.number)
+        await { !model.state.value.detailLoading }
+        assertEquals(listOf(Milestone(5, "v2.0"), v1), model.openMilestones())
+
+        model.setMilestone(3)
+        assertTrue(changes.isEmpty())
+
+        model.setMilestone(5)
+        await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
+        assertEquals("Set milestone v2.0 on issue #4.", model.state.value.feedback)
+        assertEquals(Milestone(5, "v2.0"), model.state.value.issue?.milestone)
+        assertTrue(model.state.value.issues.items.isEmpty())
+
+        model.setMilestone(null)
+        await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
+        assertEquals("Removed the milestone from issue #4.", model.state.value.feedback)
+        assertNull(model.state.value.issue?.milestone)
+        assertEquals(listOf(5L, null), changes)
+
+        model.startEdit()
+        assertFalse(model.canChangeMilestone)
+        model.setMilestone(5)
+        assertEquals(listOf(5L, null), changes)
+    }
+
+    @Test
+    fun `list rows and issue details show the milestone`() {
+        val issue = Issue(16, "Title", true, "ljunker", "", emptyList(), emptyList(), milestone = Milestone(3, "v1.0 <b>"))
+        assertEquals("#16 · by ljunker · Milestone v1.0 <b>", issueMetaLine(issue) { "Today" })
+        assertEquals("#16 · Milestone v1.0 <b>", issueMetaLine(issue.copy(author = null)) { "Today" })
+
+        val html = IssueDetailsContent(issue, emptyList(), false).toHtml()
+        assertTrue("<strong>Milestone</strong> <span class='issue-milestone'>&nbsp;v1.0 &lt;b&gt;&nbsp;</span>" in html, html)
+        val without = IssueDetailsContent(issue.copy(milestone = null), emptyList(), false).toHtml()
+        assertTrue("<strong>Milestone</strong> <span class='issue-muted'>None</span>" in without, without)
+    }
+
+    @Test
     fun `list rows describe number, creation date and author`() {
         val issue = Issue(16, "Title", true, "ljunker", "", emptyList(), emptyList(), "2026-11-11T09:00:00Z")
         assertEquals("#16 · created Today, by ljunker", issueMetaLine(issue) { "Today" })
@@ -1451,6 +1675,9 @@ class IssuesTest {
         override suspend fun assignees(): List<String> = error("Unexpected assignee list")
         override suspend fun changeAssignees(number: Long, add: Collection<String>, remove: Collection<String>):
             AssigneeChange = error("Unexpected assignee change")
+
+        override suspend fun milestones(): List<Milestone> = error("Unexpected milestone list")
+        override suspend fun setMilestone(number: Long, milestone: Long?): Issue = error("Unexpected milestone change")
     }
 
     private fun response(json: String, next: String? = null): GithubApiResponse = object : GithubApiResponse {

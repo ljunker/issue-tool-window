@@ -77,6 +77,7 @@ internal class IssuesPanel(
     private val sortChip = MutableStateFlow<IssueSort?>(null)
     private val labelChip = MutableStateFlow<String?>(null)
     private val assigneeChip = MutableStateFlow<String?>(null)
+    private val milestoneChip = MutableStateFlow<MilestoneFilter?>(null)
     private val issueRows = DefaultListModel<Issue>()
     private val issueList = JBList(issueRows).apply {
         selectionMode = ListSelectionModel.SINGLE_SELECTION
@@ -114,6 +115,14 @@ internal class IssuesPanel(
                         if (isViewer(login)) PopupItemPresentation.Simple(message("filter.assignee.me"), null, login)
                         else PopupItemPresentation.Simple(login)
                     }
+                }
+            )
+            add(
+                DropDownComponentFactory(milestoneChip).create(scope, message("filter.milestone"), ::milestoneName) { point ->
+                    val options = suspend {
+                        listOf(MilestoneFilter.None) + model.milestoneFilterOptions().map(MilestoneFilter::Of)
+                    }
+                    choose(point, options) { PopupItemPresentation.Simple(milestoneChoice(it)) }
                 }
             )
             add(
@@ -166,6 +175,12 @@ internal class IssuesPanel(
                 assigneeChip.value = model.state.value.criteria.assignee
             }
         }
+        scope.launch {
+            milestoneChip.collect { chosen ->
+                model.filterMilestone(chosen)
+                milestoneChip.value = model.state.value.criteria.milestone
+            }
+        }
         searchField.textEditor.addActionListener { submitSearch() }
         searchField.addDocumentListener(object : DocumentAdapter() {
             override fun textChanged(e: DocumentEvent) {
@@ -201,6 +216,7 @@ internal class IssuesPanel(
             sortChip.value = sortChipValue(state.sort, sortChip.value)
             labelChip.value = state.criteria.label
             assigneeChip.value = state.criteria.assignee
+            milestoneChip.value = state.criteria.milestone
             if (searchField.text != state.searchInput) searchField.text = state.searchInput
             searchField.isEnabled = canNavigate
             issueList.isEnabled = canNavigate
@@ -226,24 +242,6 @@ internal class IssuesPanel(
         }
         // A short first page does not fill the list, so nothing could be scrolled to load the next one.
         SwingUtilities.invokeLater(::loadMoreWhenAtEnd)
-    }
-
-    /** Shows the options of the connected repository, so a repository change never offers stale values. */
-    private suspend fun choose(
-        point: RelativePoint,
-        options: suspend () -> List<String>,
-        presentation: (String) -> PopupItemPresentation,
-    ): String? {
-        val loaded = flow {
-            emit(
-                try {
-                    Result.success(options())
-                } catch (error: IssuesFailure) {
-                    Result.failure(error)
-                }
-            )
-        }
-        return ChooserPopupUtil.showAsyncChooserPopup(point, loaded, presentation)
     }
 
     private fun isViewer(login: String) = model.state.value.viewer?.equals(login, ignoreCase = true) == true
@@ -287,6 +285,7 @@ internal class IssuesPanel(
 
 internal class IssueDetailsPanel(
     private val model: IssuesModel,
+    private val scope: CoroutineScope,
     openOnGitHub: (Long) -> Unit,
     createBranch: (Issue) -> Unit,
     parent: Disposable,
@@ -332,6 +331,7 @@ internal class IssueDetailsPanel(
     private val edit = button("action.edit", model::startEdit)
     private val editLabels = button("action.labels", model::startLabels)
     private val editAssignees = button("action.assignees", model::startAssignees)
+    private val editMilestone: JButton = button("action.milestone") { chooseMilestone() }
     private val branch = button("action.branch") { model.state.value.issue?.let(createBranch) }
     private val browser =
         ActionLink(message("action.browser")) { model.state.value.issue?.let { openOnGitHub(it.number) } }
@@ -394,7 +394,7 @@ internal class IssueDetailsPanel(
         }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
             add(
-                stack(row(status, edit, editLabels, editAssignees, branch, browser, refresh), detailStatus),
+                stack(row(status, edit, editLabels, editAssignees, editMilestone, branch, browser, refresh), detailStatus),
                 BorderLayout.NORTH,
             )
             add(issueScroll, BorderLayout.CENTER)
@@ -539,6 +539,7 @@ internal class IssueDetailsPanel(
         edit.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editLabels.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editAssignees.isEnabled = editLabels.isEnabled
+        editMilestone.isEnabled = editLabels.isEnabled
         branch.isEnabled = !state.writing
         refresh.isEnabled = !state.writing && !state.detailLoading
         comment.syncText(state.commentDraft)
@@ -580,6 +581,31 @@ internal class IssueDetailsPanel(
         cancelPicker.isEnabled = !state.writing
     }
 
+    /** Offers the open milestones and, if the issue has one, its removal; the choice is saved right away. */
+    private fun chooseMilestone() {
+        if (!model.canChangeMilestone) return
+        val issue = model.state.value.issue ?: return
+        val current = issue.milestone
+        val point = RelativePoint(editMilestone, Point(0, editMilestone.height))
+        scope.launch {
+            val options = suspend {
+                listOfNotNull(MilestoneFilter.None.takeIf { current != null }) +
+                    model.openMilestones().map(MilestoneFilter::Of)
+            }
+            val chosen = choose(point, options) { choice ->
+                val text = when (choice) {
+                    MilestoneFilter.None -> message("milestone.remove")
+                    is MilestoneFilter.Of -> choice.milestone.title
+                }
+                val selected = choice is MilestoneFilter.Of && choice.milestone.number == current?.number
+                PopupItemPresentation.Simple(text, if (selected) AllIcons.Actions.Checked else null)
+            } ?: return@launch
+            // The options load asynchronously; meanwhile another issue may have been opened.
+            if (model.state.value.issue?.number != issue.number) return@launch
+            model.setMilestone((chosen as? MilestoneFilter.Of)?.milestone?.number)
+        }
+    }
+
     private fun updateDraft() = model.editDraft(IssueDraft(title.text, description.text))
 
     private fun runCommentAction(action: CommentAction, commentId: String) {
@@ -597,6 +623,37 @@ internal class IssueDetailsPanel(
     }
 
     private fun labelFor(key: String, field: JTextComponent) = JBLabel(message(key)).apply { labelFor = field }
+}
+
+/** Shows the options of the connected repository, so a repository change never offers stale values. */
+private suspend fun <T : Any> choose(
+    point: RelativePoint,
+    options: suspend () -> List<T>,
+    presentation: (T) -> PopupItemPresentation,
+): T? {
+    val loaded = flow {
+        emit(
+            try {
+                Result.success(options())
+            } catch (error: IssuesFailure) {
+                Result.failure(error)
+            }
+        )
+    }
+    return ChooserPopupUtil.showAsyncChooserPopup(point, loaded, presentation)
+}
+
+/** Short value of the milestone chip. */
+private fun milestoneName(filter: MilestoneFilter): String = when (filter) {
+    MilestoneFilter.None -> message("filter.milestone.none")
+    is MilestoneFilter.Of -> filter.milestone.title
+}
+
+/** Entry of the milestone filter popup; closed milestones are marked as such. */
+private fun milestoneChoice(filter: MilestoneFilter): String = when (filter) {
+    MilestoneFilter.None -> message("filter.milestone.none")
+    is MilestoneFilter.Of ->
+        if (filter.milestone.open) filter.milestone.title else message("filter.milestone.closed", filter.milestone.title)
 }
 
 private fun JTextComponent.onEdit(onChange: () -> Unit) {

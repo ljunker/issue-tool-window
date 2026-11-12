@@ -131,7 +131,12 @@ internal fun issueMetaLine(issue: Issue, formatDate: (Long) -> String = DateForm
         }
     }
     val details = listOfNotNull(created, issue.author?.let { message("list.meta.author", it) })
-    return if (details.isEmpty()) "#${issue.number}" else "#${issue.number} · ${details.joinToString(", ")}"
+    val parts = listOfNotNull(
+        "#${issue.number}",
+        details.takeIf { it.isNotEmpty() }?.joinToString(", "),
+        issue.milestone?.let { message("list.meta.milestone", it.title) },
+    )
+    return parts.joinToString(" · ")
 }
 
 /** Small label on a rounded background, like the state badge of the pull request list. */
