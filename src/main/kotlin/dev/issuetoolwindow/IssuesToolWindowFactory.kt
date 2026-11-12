@@ -18,6 +18,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.IconUtil
@@ -58,11 +59,12 @@ class IssuesToolWindowFactory : ToolWindowFactory, DumbAware {
 }
 
 @OptIn(ExperimentalCoroutinesApi::class)
-private class IssuesToolWindow(private val project: Project) : Disposable {
+private class IssuesToolWindow(private val project: Project) : Disposable, IssueOpener {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.EDT)
     private val model = IssuesModel(scope)
     private val editorManager = FileEditorManager.getInstance(project)
     private val properties = PropertiesComponent.getInstance(project)
+    private val navigator = project.service<IssueNavigator>()
     private val detailsFile = IssueDetailsFile(model, ::openOnGitHub, ::createBranch)
     private val selector = RepositorySelectorPanel(::chooseRepository, ::chooseAccount, ::viewIssues, ::signIn)
     private val list = IssuesPanel(model, scope, ::signIn, ::showDetails)
@@ -87,6 +89,8 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
     private var connectedTo: Pair<Repository, GithubAccount>? = null
     private val avatars = mutableMapOf<String, Icon?>()
     private var savedSettings: IssueListSettings? = null
+    /** Issue to open once the remotes and accounts are known, see [openIssue]. */
+    private var pendingOpen: Pair<Repository, Long>? = null
 
     init {
         selector.showLoading()
@@ -119,10 +123,17 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
                 if (!contextLoaded) restoreSelection()
                 contextLoaded = true
                 repository = repositoryForSelection(repos, repository)
-                account = account?.takeIf { it in accounts }
-                    ?: GHAccountsUtil.getDefaultAccount(project)?.takeIf { it in accounts }
-                            ?: accounts.singleOrNull()
+                account = preferredAccount(
+                    accounts,
+                    account,
+                    properties.getValue(ACCOUNT_KEY),
+                    GHAccountsUtil.getDefaultAccount(project),
+                )
                 updateContext()
+                pendingOpen?.let { (target, number) ->
+                    pendingOpen = null
+                    openIssue(target, number)
+                }
             }
         }
         scope.launch {
@@ -140,6 +151,34 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
         toolWindow.setTitleActions(listOf(NewIssueAction(), RefreshAction()))
         toolWindow.setAdditionalGearActions(DefaultActionGroup(ChangeRepositoryAction()))
         updateTitle()
+        navigator.register(this)?.let { (target, number) -> openIssue(target, number) }
+    }
+
+    /**
+     * Shows issue [number] of [target] in the issue tab and switches the list to [target] if needed, like choosing it
+     * on the start screen. While an issue is edited or saved, the tab is only brought to front. Without a usable
+     * account the tool window opens so that the user can sign in or choose one.
+     */
+    override fun openIssue(target: Repository, number: Long) {
+        if (!contextLoaded) {
+            pendingOpen = target to number
+            return
+        }
+        val state = model.state.value
+        if (connectedTo != null && (state.editor != null || state.writing)) {
+            showDetails(true)
+            return
+        }
+        val repo = repositories.firstOrNull { it.fullName.equals(target.fullName, ignoreCase = true) }
+        if (repo != null) repository = repo
+        if (repo == null || account == null) {
+            updateContext()
+            ToolWindowManager.getInstance(project).getToolWindow(TOOL_WINDOW_ID)?.activate(null)
+            return
+        }
+        viewIssues()
+        model.select(number)
+        showDetails(true)
     }
 
     /** Opens the list right away when the repository and account chosen last time are still available. */
@@ -201,6 +240,7 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
         val connection = if (viewing && repo != null && selected != null) repo to selected else null
         if (connectedTo != connection) {
             connectedTo = connection
+            navigator.connectionChanged(connection)
             model.connect(
                 connection?.let { (repo, account) -> GithubIssuesGateway(repo, account) },
                 selected?.name,
@@ -298,6 +338,7 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
     }
 
     override fun dispose() {
+        navigator.unregister(this)
         scope.cancel()
         if (!project.isDisposed) closeDetails()
     }
@@ -350,8 +391,6 @@ private class IssuesToolWindow(private val project: Project) : Disposable {
     private companion object {
         const val SELECT_CARD = "select"
         const val ISSUES_CARD = "issues"
-        const val REPOSITORY_KEY = "dev.issuetoolwindow.repository"
-        const val ACCOUNT_KEY = "dev.issuetoolwindow.account"
         const val AVATAR_SIZE = 24
     }
 }

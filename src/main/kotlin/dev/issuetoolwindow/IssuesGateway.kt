@@ -149,4 +149,12 @@ internal interface IssuesGateway {
 
 internal data class AssigneeChange(val issue: Issue, val failed: Map<String, IssuesFailure> = emptyMap())
 
-internal class IssuesFailure(message: String, val offerSignIn: Boolean = false) : Exception(message)
+/**
+ * A failure to show the user. [offerSignIn] marks missing or invalid credentials; [missing] marks a number that belongs to
+ * no issue of the repository.
+ */
+internal class IssuesFailure(
+    message: String,
+    val offerSignIn: Boolean = false,
+    val missing: Boolean = false,
+) : Exception(message)
