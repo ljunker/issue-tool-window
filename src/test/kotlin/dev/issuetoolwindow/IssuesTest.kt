@@ -24,6 +24,118 @@ import kotlin.test.assertTrue
 
 class IssuesTest {
     @Test
+    fun `commit suggestions filter by number and find an exact older issue`() = runBlocking {
+        val recent = Issue(420, "Recent closed issue", false, null, "", emptyList(), emptyList())
+        val older = recent.copy(number = 42, title = "Older issue")
+        val other = recent.copy(number = 21, title = "Different issue")
+        val gateway = object : StubGateway(recent) {
+            override suspend fun issues(
+                filter: IssueFilter,
+                sort: IssueSort,
+                criteria: IssueCriteria,
+                next: String?,
+            ): Page<Issue> {
+                assertEquals(IssueFilter.ALL, filter)
+                assertEquals(IssueSort.RECENTLY_UPDATED, sort)
+                return Page(listOf(recent, other), null)
+            }
+
+            override suspend fun issue(number: Long): Issue {
+                if (number == older.number) return older
+                throw IssuesFailure("Missing", missing = true)
+            }
+        }
+        val searchTitles: suspend (String) -> List<Issue> = { error("Unexpected title search for $it") }
+        assertEquals(listOf(recent, other), commitIssueSuggestions("", gateway, searchTitles))
+        assertEquals(listOf(recent), commitIssueSuggestions("4", gateway, searchTitles))
+        assertEquals(listOf(older, recent), commitIssueSuggestions("42", gateway, searchTitles))
+    }
+
+    @Test
+    fun `commit suggestions match recent titles and include older title results once`() = runBlocking {
+        val recent = Issue(42, "Fix Parser", true, null, "", emptyList(), emptyList())
+        val older = recent.copy(number = 11, title = "Parser regression")
+        val gateway = StubGateway(recent)
+        assertEquals(listOf(recent), commitIssueSuggestions("PA", gateway) { error("Too short for GitHub search") })
+        assertEquals(listOf(recent, older), commitIssueSuggestions("parser", gateway) { query ->
+            assertEquals("parser", query)
+            listOf(recent, older)
+        })
+
+        val repo = Repository("owner", "project")
+        val url = URI(issueSearchUrl(repo, "parser", IssueFilter.ALL, titlesOnly = true))
+        val query = URLDecoder.decode(url.rawQuery, Charsets.UTF_8)
+        assertTrue(query.startsWith("q=repo:owner/project is:issue in:title \"parser\"&"))
+    }
+
+    @Test
+    fun `Markdown suggestions use assignable logins and unfiltered issues of the active repository`() = runBlocking {
+        val recent = Issue(420, "Recent closed issue", false, null, "", emptyList(), emptyList())
+        val older = recent.copy(number = 42, title = "Older issue")
+        val fetchedNumbers = mutableListOf<Long>()
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(recent) {
+            override suspend fun assignees() = listOf("alex", "alice", "bob")
+
+            override suspend fun issues(
+                filter: IssueFilter,
+                sort: IssueSort,
+                criteria: IssueCriteria,
+                next: String?,
+            ): Page<Issue> {
+                if (sort != IssueSort.RECENTLY_UPDATED) return super.issues(filter, sort, criteria, next)
+                assertEquals(IssueFilter.ALL, filter)
+                assertEquals(IssueCriteria(), criteria)
+                assertNull(next)
+                return Page(listOf(recent), null)
+            }
+
+            override suspend fun issue(number: Long): Issue {
+                fetchedNumbers += number
+                if (number == older.number) return older
+                throw IssuesFailure("Missing", missing = true)
+            }
+        }, viewer = "alex-viewer")
+
+        assertEquals(listOf("@alex", "@alice"), model.markdownSuggestions(MarkdownReference('@', "AL", 0, 3)).map { it.label })
+        val recentSuggestion = MarkdownSuggestion("#420", "#420 Recent closed issue")
+        assertEquals(listOf(recentSuggestion), model.markdownSuggestions(MarkdownReference('#', "", 0, 1)))
+        assertEquals(listOf(recentSuggestion), model.markdownSuggestions(MarkdownReference('#', "4", 0, 2)))
+        assertEquals(
+            listOf(MarkdownSuggestion("#42", "#42 Older issue"), recentSuggestion),
+            model.markdownSuggestions(MarkdownReference('#', "42", 0, 3)),
+        )
+        assertEquals(listOf(4L, 42L), fetchedNumbers)
+    }
+
+    @Test
+    fun `Markdown suggestions discard results across repository changes and tolerate failed lookups`() = runBlocking {
+        val issue = Issue(1, "Example", true, null, "", emptyList(), emptyList())
+        val oldRequest = CompletableDeferred<Unit>()
+        val oldLogins = CompletableDeferred<List<String>>()
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(issue) {
+            override suspend fun assignees(): List<String> {
+                oldRequest.complete(Unit)
+                return oldLogins.await()
+            }
+        })
+        val mention = MarkdownReference('@', "", 0, 1)
+        val oldLookup = launch { assertEquals(emptyList(), model.markdownSuggestions(mention)) }
+        oldRequest.await()
+        model.connect(object : StubGateway(issue.copy(number = 2)) {
+            override suspend fun assignees() = listOf("new-repo")
+            override suspend fun issue(number: Long): Issue = throw IssuesFailure("Connection failed")
+        })
+        oldLogins.complete(listOf("old-repo"))
+        oldLookup.join()
+        assertEquals(listOf(MarkdownSuggestion("@new-repo")), model.markdownSuggestions(mention))
+        assertEquals(emptyList(), model.markdownSuggestions(MarkdownReference('#', "123", 0, 4)))
+        model.connect(null)
+        assertEquals(emptyList(), model.markdownSuggestions(mention))
+    }
+
+    @Test
     fun `same repo from multiple remotes is selectable once`() {
         val origin = Repository("owner", "project")
         val upstream = Repository("upstream", "project")

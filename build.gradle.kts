@@ -1,4 +1,5 @@
 import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.models.ProductRelease
 
 plugins {
@@ -25,12 +26,14 @@ dependencies {
         bundledPlugin("com.intellij.platform.vcs")
         bundledPlugin("org.jetbrains.plugins.github")
         pluginVerifier()
+        testFramework(TestFrameworkType.Platform)
     }
     val commonmarkVersion = "0.32.0"
     implementation("org.commonmark:commonmark:$commonmarkVersion")
     implementation("org.commonmark:commonmark-ext-autolink:$commonmarkVersion")
     implementation("org.commonmark:commonmark-ext-task-list-items:$commonmarkVersion")
     testImplementation(kotlin("test-junit"))
+    testRuntimeOnly("org.opentest4j:opentest4j:1.3.0")
 }
 
 kotlin {
