@@ -80,7 +80,8 @@ freigegebene Plan.
    wesentliche Abweichung vom Plan, halte an und lege im Issue einen neuen Plan zur Freigabe vor.
 3. Pushe den Branch und erstelle einen Pull Request gegen den Zielbranch (`gh pr create --base <Zielbranch>`). Verlinke das vollständig gelöste Issue im
    PR-Text mit `Closes #<Nummer>` und verweise auf den freigegebenen Plan. Beschreibe Änderungen, durchgeführte Prüfungen
-   und offene Punkte. Prüfe die CI und behebe Fehler, die zur Änderung gehören.
+   und offene Punkte. Prüfe die CI und behebe Fehler, die zur Änderung gehören. Laufen für den PR keine CI-Checks,
+   sind die lokalen Projektprüfungen maßgeblich; nenne das im PR-Status.
 4. Kommentiere im Issue mit Marker `<!-- github-issue-umsetzen:pr-angelegt -->`, dass der PR angelegt wurde, mit Link.
 5. Kommentiere im PR mit Marker `<!-- github-issue-umsetzen:pr-status -->` den Stand zur Freigabe: Head-Commit-SHA,
    Prüf- und CI-Status, offene Punkte und die Bitte um `/approve` durch einen Maintainer.

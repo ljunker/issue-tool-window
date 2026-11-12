@@ -16,8 +16,9 @@ Hinweise zu Build, Abnahme und Release des Plugins. Zur Installation und Nutzung
 ./gradlew runIde --args="/Pfad/zum/Testprojekt"
 ```
 
-Lokal gebaute Plugin-ZIPs liegen unter `build/distributions/`. Bei Pull Requests führt GitHub Actions mit JDK 25
-`test`, `buildPlugin` und `verifyPlugin` aus.
+Lokal gebaute Plugin-ZIPs liegen unter `build/distributions/`. Bei Pull Requests gegen `main` führt GitHub Actions mit
+JDK 25 `test`, `buildPlugin` und `verifyPlugin` aus. Pull Requests gegen `develop` laufen ohne CI; dort sind die lokalen
+Prüfungen maßgeblich.
 
 ## Unterstützte IDEA-Versionen
 
