@@ -16,6 +16,7 @@
       <li>Create and check out a local Git branch for an issue</li>
       <li>See the issue of the current branch in the status bar and open it with one click</li>
       <li>Find issues with <b>Search Everywhere</b>: <code>#42</code> or text from title and description</li>
+      <li>Open <code>#42</code> in code comments with Ctrl/Cmd+Click and from the Git log context menu</li>
     </ul>
     <p>Source code and issue tracker:
     <a href="https://github.com/ljunker/issue-tool-window">github.com/ljunker/issue-tool-window</a></p>
@@ -26,11 +27,18 @@
   <depends>org.jetbrains.plugins.github</depends>
   <resource-bundle>messages.IssuesBundle</resource-bundle>
   <extensions defaultExtensionNs="com.intellij">
+    <annotator language="" implementationClass="dev.issuetoolwindow.IssueCommentReferenceAnnotator"/>
     <fileEditorProvider implementation="dev.issuetoolwindow.IssueDetailsEditorProvider"/>
+    <psi.referenceContributor language="" implementation="dev.issuetoolwindow.IssueCommentReferenceContributor"/>
     <searchEverywhereContributor implementation="dev.issuetoolwindow.IssueSearchEverywhereContributorFactory"/>
     <statusBarWidgetFactory id="dev.issuetoolwindow.BranchIssue" implementation="dev.issuetoolwindow.IssueStatusBarWidgetFactory"
       order="after git"/>
     <toolWindow anchor="left" factoryClass="dev.issuetoolwindow.IssuesToolWindowFactory" icon="/icons/issues.svg" id="GitHub Issues"
       secondary="true"/>
   </extensions>
+  <actions>
+    <group id="dev.issuetoolwindow.OpenCommitIssue" class="dev.issuetoolwindow.OpenCommitIssueActionGroup">
+      <add-to-group group-id="Vcs.Log.ContextMenu" anchor="last"/>
+    </group>
+  </actions>
 </idea-plugin>
