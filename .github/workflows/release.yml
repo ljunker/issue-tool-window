@@ -1,6 +1,6 @@
 name: Release
 
-# Jeder Push auf main wird getestet. Enthält er seit dem letzten Tag vX.Y.Z Commits vom Typ
+# Jeder Push auf main (Merge von develop nach main) wird getestet. Enthält er seit dem letzten Tag vX.Y.Z Commits vom Typ
 # feat/fix/perf oder Breaking Changes, entsteht automatisch eine neue Version:
 # Plugin signieren, im JetBrains Marketplace veröffentlichen und als GitHub-Release mit Tag ablegen.
 on:
@@ -24,6 +24,8 @@ permissions:
 jobs:
   release:
     name: Test, version and publish
+    # Auch ein manueller Start veröffentlicht nur von main aus.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     permissions:
       contents: write
