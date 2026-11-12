@@ -6,6 +6,8 @@ import com.intellij.util.ui.StyleSheetUtil
 import dev.issuetoolwindow.IssuesBundle.message
 import dev.issuetoolwindow.PullRequestActivity.Relation
 import java.awt.Color
+import java.net.URLDecoder
+import java.net.URLEncoder
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -43,7 +45,9 @@ internal data class IssueDetailsContent(
         }
         for (entry in activity) {
             when (entry) {
-                is Comment -> appendCard("issue-comment", entry.author, entry.createdAt, entry.body)
+                is Comment -> appendCard("issue-comment", entry.author, entry.createdAt, entry.body) {
+                    appendCommentActions(entry)
+                }
                 is LabelActivity -> appendLabelEvent(entry)
                 is PullRequestActivity -> appendPullRequestEvent(entry)
             }
@@ -99,10 +103,17 @@ internal data class IssueDetailsContent(
         }
     }
 
-    private fun StringBuilder.appendCard(cardClass: String, author: String?, createdAt: String?, body: String) {
+    private fun StringBuilder.appendCard(
+        cardClass: String,
+        author: String?,
+        createdAt: String?,
+        body: String,
+        appendActions: StringBuilder.() -> Unit = {},
+    ) {
         append("<div class='$cardClass'><p class='issue-card-header'>")
         append("<strong>${escapeXmlEntities(author ?: message("detail.unknown"))}</strong>")
         appendTimestamp(createdAt)
+        appendActions()
         append("</p><div class='issue-markdown'>")
         if (body.isBlank() && cardClass == "issue-description") {
             append("<p class='issue-muted'>${escapeXmlEntities(message("detail.noDescription"))}</p>")
@@ -110,6 +121,18 @@ internal data class IssueDetailsContent(
             append(IssueMarkdown.render(body))
         }
         append("</div></div>")
+    }
+
+    private fun StringBuilder.appendCommentActions(comment: Comment) {
+        val links = listOfNotNull(
+            CommentAction.EDIT.takeIf { comment.canEdit },
+            CommentAction.DELETE.takeIf { comment.canDelete },
+        ).map { action ->
+            "<a href='${escapeXmlEntities(action.link(comment.id))}'>${escapeXmlEntities(message(action.messageKey))}</a>"
+        }
+        if (links.isNotEmpty()) {
+            append(" <span class='issue-comment-actions'>&nbsp;&nbsp;${links.joinToString(" &nbsp;·&nbsp; ")}</span>")
+        }
     }
 
     private fun StringBuilder.appendTimestamp(createdAt: String?) {
@@ -131,6 +154,30 @@ internal data class IssueDetailsContent(
 
     private companion object {
         val labelColorPattern = Regex("[0-9a-fA-F]{6}")
+    }
+}
+
+/**
+ * Actions in the header of a comment. Their links use a scheme of their own, which rendered Markdown cannot produce
+ * because it only keeps web links.
+ */
+internal enum class CommentAction(val messageKey: String) {
+    EDIT("action.editComment"),
+    DELETE("action.deleteComment");
+
+    fun link(commentId: String): String = "$SCHEME:${name.lowercase()}:${URLEncoder.encode(commentId, Charsets.UTF_8)}"
+
+    companion object {
+        private const val SCHEME = "issue-comment"
+
+        /** The action and comment ID of a link created by [link], or `null` for any other link. */
+        fun parse(link: String?): Pair<CommentAction, String>? {
+            val parts = link?.split(':', limit = 3)?.takeIf { it.size == 3 && it[0] == SCHEME } ?: return null
+            val action = entries.firstOrNull { it.name.lowercase() == parts[1] } ?: return null
+            val id = runCatching { URLDecoder.decode(parts[2], Charsets.UTF_8) }.getOrNull()?.takeIf { it.isNotEmpty() }
+                ?: return null
+            return action to id
+        }
     }
 }
 
@@ -167,6 +214,7 @@ internal fun issueDetailsStyleSheet(light: Boolean): StyleSheet {
         div.issue-description { border-color: $descriptionBorder; margin-top: 14px; }
         p.issue-card-header { color: $foreground; background-color: $surface; border-bottom: 1px solid $border; margin: 0; padding: 8px 14px; }
         div.issue-description p.issue-card-header { background-color: $descriptionHeader; border-bottom-color: $descriptionBorder; }
+        span.issue-comment-actions a { color: $link; }
         div.issue-markdown { padding: 12px 14px; }
         div.issue-markdown h1, div.issue-markdown h2 { border-bottom: 1px solid $border; padding-bottom: 5px; }
         div.issue-markdown h1 { font-size: 160%; }
