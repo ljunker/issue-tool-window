@@ -1,7 +1,9 @@
 name: CI
 
+# Nur Pull Requests gegen main (Release-PRs von develop) werden geprüft.
 on:
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read

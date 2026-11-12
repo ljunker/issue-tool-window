@@ -12,6 +12,11 @@ internal data class IssueDraft(val title: String = "", val body: String = "")
 
 internal data class IssueEditor(val draft: IssueDraft, val issueNumber: Long? = null)
 
+/** Markdown of an existing comment of issue [issueNumber] while it is edited. */
+internal data class CommentEditor(val commentId: String, val issueNumber: Long, val original: String, val body: String) {
+    val changed: Boolean get() = body != original
+}
+
 internal enum class PickerKind { LABELS, ASSIGNEES }
 
 internal fun statusFeedback(issue: Issue): String =
@@ -71,6 +76,7 @@ internal data class IssuesState(
     val feedback: String? = null,
     val editor: IssueEditor? = null,
     val commentDraft: String = "",
+    val commentEditor: CommentEditor? = null,
     val picker: SelectionPicker? = null,
     /** Login of the active GitHub account. */
     val viewer: String? = null,
@@ -156,6 +162,13 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         update { copy(writeError = null, feedback = null) }
         loadList()
         if (current.selected != null) loadDetail()
+    }
+
+    /** Reloads only the shown issue and its activity, e.g. from the issue tab while the tool window is hidden. */
+    fun refreshDetail() {
+        if (current.writing || current.selected == null) return
+        update { copy(writeError = null, feedback = null) }
+        loadDetail()
     }
 
     fun filter(filter: IssueFilter) {
@@ -275,6 +288,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
                 writeError = null,
                 feedback = null,
                 commentDraft = commentDrafts[number].orEmpty(),
+                commentEditor = null,
                 picker = null,
             )
         }
@@ -296,7 +310,12 @@ internal class IssuesModel(private val scope: CoroutineScope) {
                 if (next == null) {
                     val issue = source.issue(number)
                     ensureActive()
-                    update { copy(issue = issue) }
+                    update {
+                        copy(
+                            issue = issue,
+                            issues = issues.copy(items = issues.items.map { if (it.number == number) issue else it }),
+                        )
+                    }
                 }
                 val page = source.activity(number, next)
                 ensureActive()
@@ -440,6 +459,72 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         }
     }
 
+    /** Opens the Markdown of the shown comment [id] for editing, if GitHub lets the active account edit it. */
+    fun startEditComment(id: String) {
+        val state = current
+        if (gateway == null || state.writing || state.editor != null || state.picker != null) return
+        if (state.commentEditor != null) return
+        val number = state.selected ?: return
+        val comment = state.activity.items.firstOrNull { it.id == id } as? Comment ?: return
+        if (!comment.canEdit) return
+        update {
+            copy(commentEditor = CommentEditor(id, number, comment.body, comment.body), writeError = null, feedback = null)
+        }
+    }
+
+    fun editCommentEditor(body: String) {
+        val editor = current.commentEditor ?: return
+        if (!current.writing) update { copy(commentEditor = editor.copy(body = body)) }
+    }
+
+    fun cancelCommentEditor() {
+        if (!current.writing) update { copy(commentEditor = null, writeError = null) }
+    }
+
+    /** Saves the edited comment and shows it as GitHub stores it afterwards. */
+    fun saveCommentEditor() {
+        val editor = current.commentEditor ?: return
+        if (editor.body.isBlank()) return
+        if (!editor.changed) return cancelCommentEditor()
+        val failed = { commentFailed(editor.issueNumber) }
+        write({ updateComment(editor.commentId, editor.body) }, refreshAfter = false, failed = failed) { saved ->
+            // A read started before this write can still contain the old text.
+            detailJob?.cancel()
+            update {
+                copy(
+                    activity = activity.copy(items = activity.items.map { if (it.id == saved.id) saved else it }),
+                    detailLoading = false,
+                    commentEditor = null,
+                    feedback = message("feedback.commentUpdated"),
+                )
+            }
+        }
+    }
+
+    /** Deletes the shown comment [id]; the caller asks for confirmation first. */
+    fun deleteComment(id: String) {
+        val state = current
+        if (state.editor != null || state.picker != null || state.commentEditor != null) return
+        val number = state.selected ?: return
+        val comment = state.activity.items.firstOrNull { it.id == id } as? Comment ?: return
+        if (!comment.canDelete) return
+        write({ deleteComment(id) }, failed = { commentFailed(number) }) {
+            update {
+                copy(
+                    activity = activity.copy(items = activity.items.filterNot { it.id == id }),
+                    feedback = message("feedback.commentDeleted"),
+                )
+            }
+        }
+    }
+
+    /** A comment deleted in the meantime disappears together with its editor; other failures keep the edited text. */
+    private fun commentFailed(number: Long) {
+        if (current.writeError?.missing != true || current.selected != number) return
+        update { copy(commentEditor = null) }
+        loadDetail()
+    }
+
     fun close(reason: CloseReason) {
         val issue = current.issue?.takeIf { it.open } ?: return
         changeStatus { close(issue.number, reason) }
@@ -475,7 +560,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     ) {
         val source = gateway ?: return
         val issue = current.issue ?: return
-        if (current.writing || current.editor != null || current.picker != null) return
+        if (current.writing || current.editor != null || current.picker != null || current.commentEditor != null) return
         val original = values(issue).toSet()
         update { copy(picker = SelectionPicker(kind, issue.number, original, original), writeError = null, feedback = null) }
         pickerJob?.cancel()

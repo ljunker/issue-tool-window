@@ -147,4 +147,34 @@ class IssueMarkdownTest {
         assertNull(IssueMarkdown.browserUri("https://example.com/bad path"))
         assertNull(IssueMarkdown.browserUri("file:///tmp/notes"))
     }
+
+    @Test
+    fun `comments show edit and delete links only when GitHub allows them`() {
+        val issue = Issue(4, "Issue", true, "owner", "", emptyList(), emptyList())
+        val comments = listOf(
+            Comment("IC_own", "alice", "Mine", null, canEdit = true, canDelete = true),
+            Comment("IC_moderated", "bob", "Deletable", null, canDelete = true),
+            Comment("IC_foreign", "carol", "Not mine [delete](issue-comment:delete:IC_foreign)", null),
+        )
+        val html = IssueDetailsContent(issue, comments, showEmptyActivity = false).toHtml()
+
+        assertContains(html, "<strong>alice</strong> <span class='issue-comment-actions'>&nbsp;&nbsp;" +
+            "<a href='issue-comment:edit:IC_own'>Edit</a> &nbsp;·&nbsp; <a href='issue-comment:delete:IC_own'>Delete</a></span>")
+        assertContains(html, "<strong>bob</strong> <span class='issue-comment-actions'>&nbsp;&nbsp;" +
+            "<a href='issue-comment:delete:IC_moderated'>Delete</a></span>")
+        assertFalse(html.contains("edit:IC_moderated"))
+        assertFalse(html.contains("issue-comment:delete:IC_foreign"))
+        assertContains(html, "<strong>carol</strong></p>")
+    }
+
+    @Test
+    fun `comment action links round-trip and other links are no comment actions`() {
+        val id = "IC_kw/D+O=="
+        assertEquals(CommentAction.EDIT to id, CommentAction.parse(CommentAction.EDIT.link(id)))
+        assertEquals(CommentAction.DELETE to id, CommentAction.parse(CommentAction.DELETE.link(id)))
+        assertNull(CommentAction.parse("https://github.com/owner/project"))
+        assertNull(CommentAction.parse("issue-comment:rename:IC_1"))
+        assertNull(CommentAction.parse("issue-comment:edit:"))
+        assertNull(CommentAction.parse(null))
+    }
 }

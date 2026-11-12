@@ -16,8 +16,9 @@ Hinweise zu Build, Abnahme und Release des Plugins. Zur Installation und Nutzung
 ./gradlew runIde --args="/Pfad/zum/Testprojekt"
 ```
 
-Lokal gebaute Plugin-ZIPs liegen unter `build/distributions/`. Bei Pull Requests führt GitHub Actions mit JDK 25
-`test`, `buildPlugin` und `verifyPlugin` aus.
+Lokal gebaute Plugin-ZIPs liegen unter `build/distributions/`. Bei Pull Requests gegen `main` führt GitHub Actions mit
+JDK 25 `test`, `buildPlugin` und `verifyPlugin` aus. Pull Requests gegen `develop` laufen ohne CI; dort sind die lokalen
+Prüfungen maßgeblich.
 
 ## Unterstützte IDEA-Versionen
 
@@ -38,9 +39,28 @@ Netzzugang. Kompatibilitätsprobleme lassen den Build scheitern.
    einem anderen Konto erstellten Issues muss GitHub den Zugriff verweigern. Den unveränderten Status auf GitHub prüfen.
 5. Ein lokales Git-Projekt ohne GitHub-Remote öffnen. Das Tool Window muss melden, dass kein GitHub-Remote vorhanden ist.
 
+## Branches
+
+- `develop` ist der Default- und Integrationsbranch. Feature-Branches (`feature/…`) entstehen von `develop`, Pull
+  Requests gehen gegen `develop`.
+- `main` enthält nur veröffentlichte Stände. Direkt auf `main` wird nicht gearbeitet.
+
+Für ein Release wird `develop` per Merge-Commit nach `main` übernommen, z. B. über einen Pull Request `develop` →
+`main` mit **Create a merge commit** oder lokal:
+
+```sh
+git switch main && git pull --ff-only
+git merge --no-ff origin/develop
+git push origin main
+```
+
+Kein Squash- oder Rebase-Merge von `develop` nach `main`: Die Versionsermittlung liest die einzelnen Commits seit dem
+letzten Tag, und `develop` und `main` müssen eine gemeinsame Historie behalten.
+
 ## Release und Versionierung
 
-Releases entstehen automatisch beim Push auf `main` (Workflow `.github/workflows/release.yml`). Die Version leitet
+Releases entstehen automatisch beim Push auf `main`, also beim Merge von `develop` nach `main` (Workflow
+`.github/workflows/release.yml`). Die Version leitet
 `.github/scripts/next-version.sh` aus den [Conventional Commits](https://www.conventionalcommits.org/) seit dem
 letzten Tag `vX.Y.Z` ab:
 
@@ -51,10 +71,20 @@ letzten Tag `vX.Y.Z` ab:
 | `fix:` oder `perf:`                             | Patch          |
 | nur andere Typen (`docs:`, `chore:`, `ci:`, …)  | kein Release   |
 
+Eine bestimmte Version lässt sich mit dem Footer `Release-As: X.Y.Z` in einer eigenen Zeile des Commit-Bodys festlegen,
+z. B. mit einem leeren Commit auf `develop`:
+
+```sh
+git commit --allow-empty -m "chore: Release 1.0.0" -m "Release-As: 1.0.0"
+```
+
+Gibt es seit dem letzten Tag mehrere solche Footer, gilt der neueste. Die Version muss größer als die des letzten Tags
+sein, sonst bricht der Workflow ab. Ein manuell gewählter Versionssprung (siehe unten) hat Vorrang vor dem Footer.
+
 Bei einem Release testet, verifiziert und signiert der Workflow das Plugin, veröffentlicht es im JetBrains
 Marketplace und legt Tag und GitHub-Release mit ZIP und Release-Notes an. Die Änderungsliste erscheint auch als
-Change-Notes im Marketplace. Über **Actions → Release → Run workflow** lässt sich ein Release mit festem
-Versionssprung erzwingen.
+Change-Notes im Marketplace. Über **Actions → Release → Run workflow** (Branch `main`) lässt sich ein Release mit
+festem Versionssprung erzwingen; auf anderen Branches läuft der Workflow nicht.
 
 ### Repository-Secrets
 

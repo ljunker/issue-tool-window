@@ -79,6 +79,11 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
             )
         ).toComment()
 
+    override suspend fun updateComment(id: String, body: String): Comment =
+        request(updateCommentRequest(id, body)).toComment()
+
+    override suspend fun deleteComment(id: String) = request(deleteCommentRequest(id)).confirm()
+
     override suspend fun close(number: Long, reason: CloseReason): Issue =
         changeState(number, mapOf("state" to "closed", "state_reason" to reason.apiValue))
 
@@ -253,8 +258,8 @@ internal suspend fun <T> allPages(start: String, load: suspend (String) -> Page<
 }
 
 internal fun RestIssue?.toOpenedIssue(number: Long): Issue {
-    if (this == null) throw IssuesFailure(message("error.issueNotFound", number.toString()))
-    if (pullRequest != null) throw IssuesFailure(message("error.pullRequest", number.toString()))
+    if (this == null) throw IssuesFailure(message("error.issueNotFound", number.toString()), missing = true)
+    if (pullRequest != null) throw IssuesFailure(message("error.pullRequest", number.toString()), missing = true)
     return toIssue()
 }
 

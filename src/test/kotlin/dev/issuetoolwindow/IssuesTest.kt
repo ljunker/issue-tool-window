@@ -17,6 +17,7 @@ import java.net.URI
 import java.net.URLDecoder
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -584,6 +585,93 @@ class IssuesTest {
     }
 
     @Test
+    fun `refreshing the detail reloads issue and activity, updates the list and keeps the comment draft`() =
+        runBlocking {
+            val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
+            val first = Comment("first", "alice", "First", null)
+            val foreign = Comment("foreign", "carol", "From GitHub", null)
+            var comments = listOf(first)
+            var listRequests = 0
+            var fail = false
+            val gateway = object : StubGateway(issue) {
+                override suspend fun issues(
+                    filter: IssueFilter,
+                    sort: IssueSort,
+                    criteria: IssueCriteria,
+                    next: String?,
+                ): Page<Issue> {
+                    listRequests++
+                    return super.issues(filter, sort, criteria, next)
+                }
+
+                override suspend fun issue(number: Long): Issue =
+                    if (fail) throw IssuesFailure("Offline") else super.issue(number)
+
+                override suspend fun activity(number: Long, next: String?) = Page<IssueActivity>(comments, null)
+            }
+            val model = IssuesModel(this)
+            model.refreshDetail()
+            model.connect(gateway)
+            await { !model.state.value.listLoading }
+            model.refreshDetail()
+            yield()
+            assertFalse(model.state.value.detailLoading)
+
+            model.select(issue.number)
+            await { !model.state.value.detailLoading }
+            model.editComment("Draft comment")
+            val lists = listRequests
+
+            gateway.issue = issue.copy(title = "Renamed elsewhere")
+            comments = listOf(first, foreign)
+            model.refreshDetail()
+            assertTrue(model.state.value.detailLoading)
+            await { !model.state.value.detailLoading }
+            assertEquals(Page(listOf<IssueActivity>(first, foreign), null), model.state.value.activity)
+            assertEquals("Renamed elsewhere", model.state.value.issue?.title)
+            assertEquals("Renamed elsewhere", model.state.value.issues.items.single().title)
+            assertEquals("Draft comment", model.state.value.commentDraft)
+            assertEquals(lists, listRequests)
+
+            fail = true
+            model.refreshDetail()
+            await { !model.state.value.detailLoading }
+            assertEquals("Offline", model.state.value.detailError?.message)
+            assertEquals("Renamed elsewhere", model.state.value.issue?.title)
+        }
+
+    @Test
+    fun `refreshing the detail waits until a write has finished`() = runBlocking {
+        val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
+        val posted = CompletableDeferred<Comment>()
+        var issueRequests = 0
+        val gateway = object : StubGateway(issue) {
+            override suspend fun issue(number: Long): Issue {
+                issueRequests++
+                return super.issue(number)
+            }
+
+            override suspend fun addComment(number: Long, body: String): Comment = posted.await()
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+        model.editComment("Comment")
+        model.comment()
+        await { model.state.value.writing }
+        val requests = issueRequests
+
+        model.refreshDetail()
+        repeat(5) { yield() }
+        assertEquals(requests, issueRequests)
+        assertFalse(model.state.value.detailLoading)
+        posted.complete(Comment("new", "alice", "Comment", null))
+        await { !model.state.value.writing && !model.state.value.detailLoading }
+    }
+
+    @Test
     fun `a failed poll keeps the shown issue and does not report an error`() = runBlocking {
         val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
         val comment = Comment("comment", "alice", "Shown", null)
@@ -1129,6 +1217,208 @@ class IssuesTest {
         assertEquals(emptyList(), model.state.value.issue?.assignees)
     }
 
+    @Test
+    fun `GraphQL activity reports whether the active account may edit and delete comments`() {
+        val page = issueActivityRequest(Repository("owner", "project"), 4, null).extractResult(response("""
+            {"data":{"repository":{"issue":{"timeline":{
+              "page_info":{"has_next_page":false,"end_cursor":null},
+              "nodes":[
+                {"kind":"IssueComment","id":"own","body":"Mine","viewer_can_update":true,"viewer_can_delete":true},
+                {"kind":"IssueComment","id":"foreign","body":"Theirs","viewer_can_update":false,"viewer_can_delete":false}
+              ]
+            }}}}}
+        """.trimIndent())).toPage(null)
+
+        assertEquals(
+            listOf(
+                Comment("own", null, "Mine", null, canEdit = true, canDelete = true),
+                Comment("foreign", null, "Theirs", null),
+            ),
+            page.items,
+        )
+    }
+
+    @Test
+    fun `comment mutations return the stored comment and explain missing comments and permissions`() {
+        val updated = updateCommentRequest("own", "Fixed").extractResult(response("""
+            {"data":{"update_issue_comment":{"issue_comment":{
+              "kind":"IssueComment","id":"own","actor":{"login":"alice"},"created_at":"2026-11-11T09:00:00Z",
+              "body":"Fixed **typo**","viewer_can_update":true,"viewer_can_delete":true
+            }}}}
+        """.trimIndent())).toComment()
+        assertEquals(Comment("own", "alice", "Fixed **typo**", "2026-11-11T09:00:00Z", true, true), updated)
+
+        val missing = assertFailsWith<IssuesFailure> {
+            updateCommentRequest("gone", "Fixed").extractResult(response("""
+                {"data":{"update_issue_comment":null},"errors":[{"type":"NOT_FOUND","message":"Could not resolve to a node"}]}
+            """.trimIndent())).toComment()
+        }
+        assertTrue(missing.missing)
+        assertEquals("This comment no longer exists. It may have been deleted on GitHub.", missing.message)
+
+        val forbidden = assertFailsWith<IssuesFailure> {
+            deleteCommentRequest("foreign").extractResult(response("""
+                {"data":{"delete_issue_comment":null},"errors":[{"type":"FORBIDDEN","message":"Resource not accessible"}]}
+            """.trimIndent())).confirm()
+        }
+        assertFalse(forbidden.missing)
+        assertEquals("Your GitHub account is not allowed to change this comment.", forbidden.message)
+
+        val other = assertFailsWith<IssuesFailure> {
+            deleteCommentRequest("own").extractResult(response("""{"errors":[{"message":"Something broke"}]}""")).confirm()
+        }
+        assertEquals("Could not change the comment. Something broke", other.message)
+
+        deleteCommentRequest("own").extractResult(
+            response("""{"data":{"delete_issue_comment":{"client_mutation_id":null}}}"""),
+        ).confirm()
+    }
+
+    @Test
+    fun `editing a comment saves its Markdown and shows the stored comment`() = runBlocking {
+        val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
+        val own = Comment("own", "alice", "Typo", null, canEdit = true, canDelete = true)
+        val foreign = Comment("foreign", "bob", "Theirs", null)
+        val updates = mutableListOf<Pair<String, String>>()
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(issue) {
+            override suspend fun activity(number: Long, next: String?) = Page<IssueActivity>(listOf(own, foreign), null)
+            override suspend fun updateComment(id: String, body: String): Comment {
+                updates += id to body
+                return own.copy(body = "$body (stored)")
+            }
+        })
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+
+        model.startEditComment("foreign")
+        assertNull(model.state.value.commentEditor)
+
+        model.startEditComment("own")
+        assertEquals(CommentEditor("own", 4, "Typo", "Typo"), model.state.value.commentEditor)
+        model.saveCommentEditor()
+        assertNull(model.state.value.commentEditor)
+        assertTrue(updates.isEmpty())
+
+        model.startEditComment("own")
+        model.editCommentEditor("   ")
+        model.saveCommentEditor()
+        assertTrue(updates.isEmpty())
+        assertEquals("   ", model.state.value.commentEditor?.body)
+
+        model.editCommentEditor("Fixed")
+        model.saveCommentEditor()
+        await { !model.state.value.writing }
+        assertEquals(listOf("own" to "Fixed"), updates)
+        assertNull(model.state.value.commentEditor)
+        assertEquals("Comment updated.", model.state.value.feedback)
+        assertEquals(listOf<IssueActivity>(own.copy(body = "Fixed (stored)"), foreign), model.state.value.activity.items)
+    }
+
+    @Test
+    fun `cancelling and switching issues discard the comment editor`() = runBlocking {
+        val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
+        val own = Comment("own", "alice", "Typo", null, canEdit = true)
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(issue) {
+            override suspend fun activity(number: Long, next: String?) = Page<IssueActivity>(listOf(own), null)
+        })
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+        model.startEditComment("own")
+        model.editCommentEditor("Draft")
+        model.startLabels()
+        assertNull(model.state.value.picker)
+        model.cancelCommentEditor()
+        assertNull(model.state.value.commentEditor)
+        assertEquals(listOf<IssueActivity>(own), model.state.value.activity.items)
+
+        model.startEditComment("own")
+        model.select(null)
+        assertNull(model.state.value.commentEditor)
+    }
+
+    @Test
+    fun `deleting a comment removes it and reloads the list`() = runBlocking {
+        val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList(), commentCount = 2)
+        val own = Comment("own", "alice", "Mine", null, canEdit = true, canDelete = true)
+        val foreign = Comment("foreign", "bob", "Theirs", null)
+        var comments = listOf<IssueActivity>(own, foreign)
+        val deleted = mutableListOf<String>()
+        var listRequests = 0
+        val gateway = object : StubGateway(issue) {
+            override suspend fun issues(filter: IssueFilter, sort: IssueSort, criteria: IssueCriteria, next: String?):
+                Page<Issue> {
+                listRequests++
+                return super.issues(filter, sort, criteria, next)
+            }
+
+            override suspend fun activity(number: Long, next: String?) = Page(comments, null)
+            override suspend fun deleteComment(id: String) {
+                deleted += id
+                comments = comments.filterNot { it.id == id }
+                this.issue = issue.copy(commentCount = 1)
+            }
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+
+        model.deleteComment("foreign")
+        assertFalse(model.state.value.writing)
+        val lists = listRequests
+
+        model.deleteComment("own")
+        await { !model.state.value.writing && !model.state.value.detailLoading && !model.state.value.listLoading }
+        assertEquals(listOf("own"), deleted)
+        assertEquals("Comment deleted.", model.state.value.feedback)
+        assertEquals(listOf<IssueActivity>(foreign), model.state.value.activity.items)
+        assertEquals(1, model.state.value.issues.items.single().commentCount)
+        assertTrue(listRequests > lists)
+    }
+
+    @Test
+    fun `a comment deleted elsewhere disappears while missing permissions keep the edited text`() = runBlocking {
+        val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
+        val own = Comment("own", "alice", "Typo", null, canEdit = true, canDelete = true)
+        var comments = listOf<IssueActivity>(own)
+        var failure = IssuesFailure("Your GitHub account is not allowed to change this comment.")
+        val model = IssuesModel(this)
+        model.connect(object : StubGateway(issue) {
+            override suspend fun activity(number: Long, next: String?) = Page(comments, null)
+            override suspend fun updateComment(id: String, body: String): Comment = throw failure
+            override suspend fun deleteComment(id: String) = throw failure
+        })
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+
+        model.startEditComment("own")
+        model.editCommentEditor("Fixed")
+        model.saveCommentEditor()
+        await { !model.state.value.writing }
+        assertEquals("Your GitHub account is not allowed to change this comment.", model.state.value.writeError?.message)
+        assertEquals("Fixed", model.state.value.commentEditor?.body)
+
+        failure = IssuesFailure("This comment no longer exists.", missing = true)
+        comments = emptyList()
+        model.saveCommentEditor()
+        await { !model.state.value.writing && !model.state.value.detailLoading }
+        assertEquals("This comment no longer exists.", model.state.value.writeError?.message)
+        assertNull(model.state.value.commentEditor)
+        assertEquals(emptyList(), model.state.value.activity.items)
+
+        comments = listOf(own)
+        model.refreshDetail()
+        await { !model.state.value.detailLoading }
+        comments = emptyList()
+        model.deleteComment("own")
+        await { !model.state.value.writing && !model.state.value.detailLoading }
+        assertEquals("This comment no longer exists.", model.state.value.writeError?.message)
+        assertEquals(emptyList(), model.state.value.activity.items)
+    }
+
     private suspend fun await(condition: () -> Boolean) {
         withTimeout(3_000) { while (!condition()) yield() }
     }
@@ -1150,6 +1440,8 @@ class IssuesTest {
         override suspend fun create(title: String, body: String?): Issue = error("Unexpected create")
         override suspend fun updateIssue(number: Long, title: String, body: String): Issue = error("Unexpected edit")
         override suspend fun addComment(number: Long, body: String): Comment = error("Unexpected comment")
+        override suspend fun updateComment(id: String, body: String): Comment = error("Unexpected comment edit")
+        override suspend fun deleteComment(id: String): Unit = error("Unexpected comment deletion")
         override suspend fun close(number: Long, reason: CloseReason): Issue = error("Unexpected close")
         override suspend fun reopen(number: Long): Issue = error("Unexpected reopen")
         override suspend fun labels(): List<String> = error("Unexpected label list")

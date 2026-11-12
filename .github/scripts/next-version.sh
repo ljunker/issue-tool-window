@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Ermittelt die nächste Version aus Conventional Commits seit dem letzten stabilen Tag vX.Y.Z.
 #   BREAKING CHANGE oder "typ!:" -> Major, "feat:" -> Minor, "fix:"/"perf:" -> Patch, sonst kein Release.
+#   Ein Footer "Release-As: X.Y.Z" im Commit-Body legt die Version fest (der neueste gewinnt, nur bei "auto").
 # Aufruf: next-version.sh <auto|patch|minor|major> <Ausgabeverzeichnis>
 # Schreibt version, release (true/false) und last_tag nach $GITHUB_OUTPUT (falls gesetzt) bzw. stdout,
 # sowie release-notes.md und change-notes.html ins Ausgabeverzeichnis.
@@ -21,13 +22,19 @@ fi
 IFS=. read -r major minor patch <<<"$base"
 
 type_re='^([a-z]+)(\([^)]*\))?(!)?: (.+)$'
+release_as_re='(^|'$'\n'')Release-As: *([0-9]+\.[0-9]+\.[0-9]+)[[:space:]]*($|'$'\n'')'
 level=0 # 0 = nichts, 1 = patch, 2 = minor, 3 = major
+release_as=""
 features=() fixes=() breaking=()
 
 while IFS= read -r -d $'\x1e' entry; do
   entry="${entry#$'\n'}"
   subject="${entry%%$'\x1f'*}"
   body="${entry#*$'\x1f'}"
+  # git log liefert die neuesten Commits zuerst, daher gilt der erste gefundene Footer.
+  if [[ -z "$release_as" && "$body" =~ $release_as_re ]]; then
+    release_as="${BASH_REMATCH[2]}"
+  fi
   [[ "$subject" =~ $type_re ]] || continue
   type="${BASH_REMATCH[1]}" bang="${BASH_REMATCH[3]}" text="${BASH_REMATCH[4]}"
   if [[ -n "$bang" || "$body" == *"BREAKING CHANGE"* ]]; then
@@ -54,6 +61,16 @@ case "$level" in
   *) version="$base" ;;
 esac
 release=$([[ "$level" -gt 0 ]] && echo true || echo false)
+
+if [[ "$bump_input" == auto && -n "$release_as" ]]; then
+  IFS=. read -r ra_major ra_minor ra_patch <<<"$release_as"
+  if (( ra_major < major || (ra_major == major && (ra_minor < minor || (ra_minor == minor && ra_patch <= patch))) )); then
+    echo "Release-As: $release_as ist nicht größer als die letzte Version $base" >&2
+    exit 1
+  fi
+  version="$release_as"
+  release=true
+fi
 
 html_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' <<<"$1"; }
 

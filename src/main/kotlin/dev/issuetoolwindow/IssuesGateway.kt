@@ -89,6 +89,10 @@ internal data class Comment(
     override val author: String?,
     val body: String,
     override val createdAt: String?,
+    /** Whether GitHub lets the active account edit the comment. */
+    val canEdit: Boolean = false,
+    /** Whether GitHub lets the active account delete the comment. */
+    val canDelete: Boolean = false,
 ) : IssueActivity
 
 internal data class LabelActivity(
@@ -128,6 +132,13 @@ internal interface IssuesGateway {
     suspend fun create(title: String, body: String?): Issue
     suspend fun updateIssue(number: Long, title: String, body: String): Issue
     suspend fun addComment(number: Long, body: String): Comment
+
+    /** Replaces the Markdown of the comment with node [id] and returns the comment as GitHub stores it afterwards. */
+    suspend fun updateComment(id: String, body: String): Comment
+
+    /** Deletes the comment with node [id]; fails with [IssuesFailure.missing] when it no longer exists. */
+    suspend fun deleteComment(id: String)
+
     suspend fun close(number: Long, reason: CloseReason): Issue
     suspend fun reopen(number: Long): Issue
 
@@ -149,4 +160,12 @@ internal interface IssuesGateway {
 
 internal data class AssigneeChange(val issue: Issue, val failed: Map<String, IssuesFailure> = emptyMap())
 
-internal class IssuesFailure(message: String, val offerSignIn: Boolean = false) : Exception(message)
+/**
+ * A failure to show the user. [offerSignIn] marks missing or invalid credentials; [missing] marks a number that belongs to
+ * no issue of the repository or a comment that no longer exists.
+ */
+internal class IssuesFailure(
+    message: String,
+    val offerSignIn: Boolean = false,
+    val missing: Boolean = false,
+) : Exception(message)

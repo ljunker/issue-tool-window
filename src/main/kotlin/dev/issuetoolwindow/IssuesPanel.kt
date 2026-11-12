@@ -5,6 +5,7 @@ import com.intellij.ide.BrowserUtil
 import com.intellij.ide.ui.LafManagerListener
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.ui.MessageDialogBuilder
 import com.intellij.openapi.util.Disposer
 import com.intellij.ui.CheckBoxList
 import com.intellij.collaboration.ui.codereview.list.search.ChooserPopupUtil
@@ -313,7 +314,9 @@ internal class IssueDetailsPanel(
         accessibleContext.accessibleName = message("detail.tab")
         addHyperlinkListener { event ->
             if (event.eventType == HyperlinkEvent.EventType.ACTIVATED) {
-                event.description?.let(IssueMarkdown::browserUri)?.let(BrowserUtil::browse)
+                val commentAction = CommentAction.parse(event.description)
+                if (commentAction != null) runCommentAction(commentAction.first, commentAction.second)
+                else event.description?.let(IssueMarkdown::browserUri)?.let(BrowserUtil::browse)
             }
         }
     }
@@ -332,11 +335,20 @@ internal class IssueDetailsPanel(
     private val branch = button("action.branch") { model.state.value.issue?.let(createBranch) }
     private val browser =
         ActionLink(message("action.browser")) { model.state.value.issue?.let { openOnGitHub(it.number) } }
+    private val refresh = JButton(AllIcons.Actions.Refresh).apply {
+        toolTipText = message("action.refresh")
+        accessibleContext.accessibleName = message("action.refresh")
+        addActionListener { this@IssueDetailsPanel.model.refreshDetail() }
+    }
     private val comment = textArea(3).apply {
         emptyText.text = message("detail.commentInput")
         accessibleContext.accessibleName = message("detail.commentInput")
     }
     private val post = button("action.comment", model::comment)
+    private val commentEditorHeading = JBLabel().apply { font = font.deriveFont(Font.BOLD) }
+    private val commentEditorText = textArea(5)
+    private val saveComment = button("action.saveComment", model::saveCommentEditor)
+    private val cancelComment = button("action.cancel", model::cancelCommentEditor)
     private val editorHeading = JBLabel()
     private val title = JBTextField()
     private val description = textArea(5)
@@ -362,6 +374,7 @@ internal class IssueDetailsPanel(
             val state = model.state.value
             return when {
                 state.editor != null -> title
+                state.commentEditor != null && state.issue != null -> commentEditorText
                 state.picker != null -> pickerSearch
                 else -> issueText
             }
@@ -370,6 +383,7 @@ internal class IssueDetailsPanel(
     private var updating = false
     private var renderedContent: IssueDetailsContent? = null
     private var wasEditing = false
+    private var wasEditingComment = false
     private var shownPicker: PickerKind? = null
     private var renderedChoices = emptyList<String>()
 
@@ -379,7 +393,10 @@ internal class IssueDetailsPanel(
             border = JBUI.Borders.empty(0, 20)
         }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(stack(row(status, edit, editLabels, editAssignees, branch, browser), detailStatus), BorderLayout.NORTH)
+            add(
+                stack(row(status, edit, editLabels, editAssignees, branch, browser, refresh), detailStatus),
+                BorderLayout.NORTH,
+            )
             add(issueScroll, BorderLayout.CENTER)
             add(composer, BorderLayout.SOUTH)
         }
@@ -398,7 +415,13 @@ internal class IssueDetailsPanel(
             add(JBScrollPane(pickerList), BorderLayout.CENTER)
             add(row(savePicker, cancelPicker), BorderLayout.SOUTH)
         }
+        val commentForm = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
+            add(stack(commentEditorHeading, labelFor("editor.comment", commentEditorText)), BorderLayout.NORTH)
+            add(JBScrollPane(commentEditorText), BorderLayout.CENTER)
+            add(row(saveComment, cancelComment), BorderLayout.SOUTH)
+        }
         details.add(form, "editor")
+        details.add(commentForm, "comment")
         details.add(picker, "picker")
         panel.add(details, BorderLayout.CENTER)
         panel.add(feedbackScroll, BorderLayout.SOUTH)
@@ -408,6 +431,7 @@ internal class IssueDetailsPanel(
             LafManagerListener { issueText.reloadCssStylesheets() },
         )
         comment.onEdit { if (!updating) model.editComment(comment.text) }
+        commentEditorText.onEdit { if (!updating) model.editCommentEditor(commentEditorText.text) }
         title.onEdit { if (!updating) updateDraft() }
         description.onEdit { if (!updating) updateDraft() }
         pickerSearch.onEdit { if (!updating) model.searchPicker(pickerSearch.text) }
@@ -435,6 +459,17 @@ internal class IssueDetailsPanel(
                     if (!wasEditing && panel.isShowing) title.requestFocusInWindow()
                 }
 
+                state.commentEditor != null && state.issue != null -> {
+                    val commentEditor = state.commentEditor
+                    commentEditorHeading.text = message("editor.commentHeading", commentEditor.issueNumber.toString())
+                    commentEditorText.syncText(commentEditor.body)
+                    commentEditorText.isEditable = !state.writing
+                    saveComment.isEnabled = !state.writing && !state.needsSignIn && commentEditor.body.isNotBlank()
+                    cancelComment.isEnabled = !state.writing
+                    detailCards.show(details, "comment")
+                    if (!wasEditingComment && panel.isShowing) commentEditorText.requestFocusInWindow()
+                }
+
                 state.picker != null && state.issue != null -> {
                     renderPicker(state, state.picker)
                     detailCards.show(details, "picker")
@@ -459,6 +494,7 @@ internal class IssueDetailsPanel(
                 }
             }
             wasEditing = editor != null
+            wasEditingComment = editor == null && state.commentEditor != null && state.issue != null
             shownPicker = state.picker?.kind?.takeIf { editor == null && state.issue != null }
 
             val error = state.writeError ?: state.detailError
@@ -504,6 +540,7 @@ internal class IssueDetailsPanel(
         editLabels.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editAssignees.isEnabled = editLabels.isEnabled
         branch.isEnabled = !state.writing
+        refresh.isEnabled = !state.writing && !state.detailLoading
         comment.syncText(state.commentDraft)
         comment.isEditable = !state.writing
         post.isEnabled = !state.writing && !state.needsSignIn && state.commentDraft.isNotBlank()
@@ -544,6 +581,20 @@ internal class IssueDetailsPanel(
     }
 
     private fun updateDraft() = model.editDraft(IssueDraft(title.text, description.text))
+
+    private fun runCommentAction(action: CommentAction, commentId: String) {
+        when (action) {
+            CommentAction.EDIT -> model.startEditComment(commentId)
+            CommentAction.DELETE -> {
+                if (model.state.value.writing) return
+                val confirmed = MessageDialogBuilder.yesNo(
+                    message("comment.delete.title"),
+                    message("comment.delete.message"),
+                ).yesText(message("action.deleteComment")).noText(message("action.cancel")).ask(panel)
+                if (confirmed) model.deleteComment(commentId)
+            }
+        }
+    }
 
     private fun labelFor(key: String, field: JTextComponent) = JBLabel(message(key)).apply { labelFor = field }
 }

@@ -13,7 +13,10 @@ GitHub-Konto, das in IDEA bereits für **Pull Requests** eingerichtet ist.
 - **Issues anlegen und bearbeiten**: Titel und Markdown-Beschreibung, Labels, Assignees
 - **Kommentieren, schließen und wieder öffnen**
 - **Branch aus Issue erstellen**: Branch-Name aus Nummer und Titel, direkt ausgecheckt
+- **Issue des aktuellen Branches in der Statusleiste**: `#42` und gekürzter Titel, ein Klick öffnet das Issue
 - Keine eigene Anmeldung nötig – das GitHub-Konto aus IDEA wird wiederverwendet
+- **Oberfläche auf Deutsch oder Englisch**: Deutsch, wenn IDEA auf Deutsch läuft (Sprachpaket), sonst Englisch.
+  Die README nennt die englischen Bezeichnungen.
 
 ## Installation
 
@@ -54,7 +57,8 @@ Bei Bedarf IDEA anschließend neu starten.
 
 Ein Issue in der Liste auswählen, um Details und Kommentare im Editor-Tab **GitHub Issue** zu öffnen. Solange der Tab
 sichtbar ist, lädt er das Issue alle 30 Sekunden im Hintergrund nach; auf GitHub ergänzte Kommentare und Änderungen
-erscheinen so ohne erneutes Öffnen.
+erscheinen so ohne erneutes Öffnen. Der Refresh-Button am Ende der Aktionszeile im Tab lädt das Issue sofort neu, auch
+wenn das Tool Window geschlossen ist.
 
 | Aktion                                     | Wirkung                                                                                                                                 |
 |--------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------|
@@ -64,6 +68,7 @@ erscheinen so ohne erneutes Öffnen.
 | **Edit Assignees**                         | Zeigt alle zuweisbaren Personen mit Filterfeld. **Save Assignees** ändert jede Person einzeln, parallele Änderungen auf GitHub bleiben erhalten. |
 | **Assign Me**                              | Weist das aktive Konto direkt zu, sofern es zuweisbar ist.                                                                              |
 | **Post Comment**                           | Fügt einen Kommentar hinzu.                                                                                                             |
+| **Edit** / **Delete** am Kommentar         | Erscheint nur, wenn GitHub dem aktiven Konto das Bearbeiten bzw. Löschen erlaubt. **Edit** öffnet den Markdown-Quelltext, **Delete** fragt vorher nach. |
 | **Close Issue** / **Reopen Issue**         | Schließt das Issue als erledigt bzw. öffnet es wieder. Das Ausklappmenü bietet **Close as Completed** und **Close as Not Planned**.      |
 
 Nach dem Speichern von Assignees zeigt der Tab die von GitHub gespeicherten Zuständigkeiten und nennt abgelehnte oder
@@ -78,6 +83,17 @@ Dialog gewählt. **Create and Checkout** erstellt den Branch vom aktuellen HEAD 
 - Lokale Änderungen bleiben erhalten, gepusht wird nichts.
 - Ungültige oder bereits vergebene Namen sowie ein laufender Merge, Rebase, Cherry-Pick oder Revert werden direkt im
   Dialog gemeldet.
+
+### Issue des aktuellen Branches
+
+Beginnt der Name des aktuellen Branches mit einer Issue-Nummer, etwa `42-fix-parser` oder `feature/42-fix-parser`, zeigt
+die Statusleiste `#42` und den gekürzten Titel. Ein Klick öffnet das Issue im Tab **GitHub Issue** und stellt die
+Issue-Liste bei Bedarf auf das Repository des Branches um.
+
+- Bei mehreren Git-Roots gilt der Root der gerade geöffneten Datei, wie beim Git-Branch-Widget.
+- Ohne Issue-Nummer im Branch-Namen oder wenn das Repository kein Issue mit dieser Nummer hat, bleibt die Anzeige leer.
+- Ohne GitHub-Konto oder Verbindung zeigt die Statusleiste nur die Nummer.
+- Ausblenden lässt sich die Anzeige über das Kontextmenü der Statusleiste (**GitHub Issue of Current Branch**).
 
 ## Entwicklung
 
