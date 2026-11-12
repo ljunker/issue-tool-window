@@ -332,6 +332,11 @@ internal class IssueDetailsPanel(
     private val branch = button("action.branch") { model.state.value.issue?.let(createBranch) }
     private val browser =
         ActionLink(message("action.browser")) { model.state.value.issue?.let { openOnGitHub(it.number) } }
+    private val refresh = JButton(AllIcons.Actions.Refresh).apply {
+        toolTipText = message("action.refresh")
+        accessibleContext.accessibleName = message("action.refresh")
+        addActionListener { this@IssueDetailsPanel.model.refreshDetail() }
+    }
     private val comment = textArea(3).apply {
         emptyText.text = message("detail.commentInput")
         accessibleContext.accessibleName = message("detail.commentInput")
@@ -379,7 +384,10 @@ internal class IssueDetailsPanel(
             border = JBUI.Borders.empty(0, 20)
         }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(stack(row(status, edit, editLabels, editAssignees, branch, browser), detailStatus), BorderLayout.NORTH)
+            add(
+                stack(row(status, edit, editLabels, editAssignees, branch, browser, refresh), detailStatus),
+                BorderLayout.NORTH,
+            )
             add(issueScroll, BorderLayout.CENTER)
             add(composer, BorderLayout.SOUTH)
         }
@@ -504,6 +512,7 @@ internal class IssueDetailsPanel(
         editLabels.isEnabled = !state.writing && !state.detailLoading && !state.needsSignIn
         editAssignees.isEnabled = editLabels.isEnabled
         branch.isEnabled = !state.writing
+        refresh.isEnabled = !state.writing && !state.detailLoading
         comment.syncText(state.commentDraft)
         comment.isEditable = !state.writing
         post.isEnabled = !state.writing && !state.needsSignIn && state.commentDraft.isNotBlank()

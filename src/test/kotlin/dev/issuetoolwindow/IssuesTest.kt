@@ -584,6 +584,93 @@ class IssuesTest {
     }
 
     @Test
+    fun `refreshing the detail reloads issue and activity, updates the list and keeps the comment draft`() =
+        runBlocking {
+            val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
+            val first = Comment("first", "alice", "First", null)
+            val foreign = Comment("foreign", "carol", "From GitHub", null)
+            var comments = listOf(first)
+            var listRequests = 0
+            var fail = false
+            val gateway = object : StubGateway(issue) {
+                override suspend fun issues(
+                    filter: IssueFilter,
+                    sort: IssueSort,
+                    criteria: IssueCriteria,
+                    next: String?,
+                ): Page<Issue> {
+                    listRequests++
+                    return super.issues(filter, sort, criteria, next)
+                }
+
+                override suspend fun issue(number: Long): Issue =
+                    if (fail) throw IssuesFailure("Offline") else super.issue(number)
+
+                override suspend fun activity(number: Long, next: String?) = Page<IssueActivity>(comments, null)
+            }
+            val model = IssuesModel(this)
+            model.refreshDetail()
+            model.connect(gateway)
+            await { !model.state.value.listLoading }
+            model.refreshDetail()
+            yield()
+            assertFalse(model.state.value.detailLoading)
+
+            model.select(issue.number)
+            await { !model.state.value.detailLoading }
+            model.editComment("Draft comment")
+            val lists = listRequests
+
+            gateway.issue = issue.copy(title = "Renamed elsewhere")
+            comments = listOf(first, foreign)
+            model.refreshDetail()
+            assertTrue(model.state.value.detailLoading)
+            await { !model.state.value.detailLoading }
+            assertEquals(Page(listOf<IssueActivity>(first, foreign), null), model.state.value.activity)
+            assertEquals("Renamed elsewhere", model.state.value.issue?.title)
+            assertEquals("Renamed elsewhere", model.state.value.issues.items.single().title)
+            assertEquals("Draft comment", model.state.value.commentDraft)
+            assertEquals(lists, listRequests)
+
+            fail = true
+            model.refreshDetail()
+            await { !model.state.value.detailLoading }
+            assertEquals("Offline", model.state.value.detailError?.message)
+            assertEquals("Renamed elsewhere", model.state.value.issue?.title)
+        }
+
+    @Test
+    fun `refreshing the detail waits until a write has finished`() = runBlocking {
+        val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
+        val posted = CompletableDeferred<Comment>()
+        var issueRequests = 0
+        val gateway = object : StubGateway(issue) {
+            override suspend fun issue(number: Long): Issue {
+                issueRequests++
+                return super.issue(number)
+            }
+
+            override suspend fun addComment(number: Long, body: String): Comment = posted.await()
+        }
+        val model = IssuesModel(this)
+        model.connect(gateway)
+        await { !model.state.value.listLoading }
+        model.select(issue.number)
+        await { !model.state.value.detailLoading }
+        model.editComment("Comment")
+        model.comment()
+        await { model.state.value.writing }
+        val requests = issueRequests
+
+        model.refreshDetail()
+        repeat(5) { yield() }
+        assertEquals(requests, issueRequests)
+        assertFalse(model.state.value.detailLoading)
+        posted.complete(Comment("new", "alice", "Comment", null))
+        await { !model.state.value.writing && !model.state.value.detailLoading }
+    }
+
+    @Test
     fun `a failed poll keeps the shown issue and does not report an error`() = runBlocking {
         val issue = Issue(4, "Issue", true, null, "", emptyList(), emptyList())
         val comment = Comment("comment", "alice", "Shown", null)
