@@ -15,6 +15,8 @@ GitHub-Konto, das in IDEA bereits für **Pull Requests** eingerichtet ist.
 - **Branch aus Issue erstellen**: Branch-Name aus Nummer und Titel, direkt ausgecheckt
 - **Issue des aktuellen Branches in der Statusleiste**: `#42` und gekürzter Titel, ein Klick öffnet das Issue
 - Keine eigene Anmeldung nötig – das GitHub-Konto aus IDEA wird wiederverwendet
+- **Oberfläche auf Deutsch oder Englisch**: Deutsch, wenn IDEA auf Deutsch läuft (Sprachpaket), sonst Englisch.
+  Die README nennt die englischen Bezeichnungen.
 
 ## Installation
 
