@@ -340,18 +340,18 @@ internal class IssueDetailsPanel(
         accessibleContext.accessibleName = message("action.refresh")
         addActionListener { this@IssueDetailsPanel.model.refreshDetail() }
     }
-    private val comment = textArea(3).apply {
-        emptyText.text = message("detail.commentInput")
-        accessibleContext.accessibleName = message("detail.commentInput")
+    private val comment = MarkdownEditor(3, scope, parent, model, model::editComment).apply {
+        input.emptyText.text = message("detail.commentInput")
+        input.accessibleContext.accessibleName = message("detail.commentInput")
     }
     private val post = button("action.comment", model::comment)
     private val commentEditorHeading = JBLabel().apply { font = font.deriveFont(Font.BOLD) }
-    private val commentEditorText = textArea(5)
+    private val commentEditorText = MarkdownEditor(5, scope, parent, model, model::editCommentEditor)
     private val saveComment = button("action.saveComment", model::saveCommentEditor)
     private val cancelComment = button("action.cancel", model::cancelCommentEditor)
     private val editorHeading = JBLabel()
     private val title = JBTextField()
-    private val description = textArea(5)
+    private val description: MarkdownEditor = MarkdownEditor(5, scope, parent, model) { updateDraft() }
     private val labels = JBTextField().apply { emptyText.text = message("editor.namesHint") }
     private val assignees = JBTextField().apply { emptyText.text = message("editor.namesHint") }
     private val labelsLabel = labelFor("editor.labels", labels)
@@ -378,7 +378,7 @@ internal class IssueDetailsPanel(
             val state = model.state.value
             return when {
                 state.editor != null -> title
-                state.commentEditor != null && state.issue != null -> commentEditorText
+                state.commentEditor != null && state.issue != null -> commentEditorText.preferredFocus
                 state.picker != null -> pickerSearch
                 else -> issueText
             }
@@ -387,13 +387,15 @@ internal class IssueDetailsPanel(
     private var updating = false
     private var renderedContent: IssueDetailsContent? = null
     private var wasEditing = false
-    private var wasEditingComment = false
+    private var editedCommentId: String? = null
+    private var renderedConnection = model.connectionVersion
+    private var composerContext: Pair<Long, Long>? = null
     private var shownPicker: PickerKind? = null
     private var renderedChoices = emptyList<String>()
 
     init {
-        val commentHeading = labelFor("detail.addComment", comment).apply { font = font.deriveFont(Font.BOLD) }
-        val composer = stack(row(moreActivity), row(commentHeading), JBScrollPane(comment), row(post)).apply {
+        val commentHeading = labelFor("detail.addComment", comment.input).apply { font = font.deriveFont(Font.BOLD) }
+        val composer = stack(row(moreActivity), row(commentHeading), comment, row(post)).apply {
             border = JBUI.Borders.empty(0, 20)
         }
         val detail = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
@@ -406,10 +408,10 @@ internal class IssueDetailsPanel(
         }
         val form = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
             add(
-                stack(editorHeading, labelFor("editor.title", title), title, labelFor("editor.body", description)),
+                stack(editorHeading, labelFor("editor.title", title), title, labelFor("editor.body", description.input)),
                 BorderLayout.NORTH,
             )
-            add(JBScrollPane(description), BorderLayout.CENTER)
+            add(description, BorderLayout.CENTER)
             add(stack(labelsLabel, labels, assigneesLabel, assignees, row(save, cancel)), BorderLayout.SOUTH)
         }
         details.add(detailPlaceholder, "empty")
@@ -420,8 +422,8 @@ internal class IssueDetailsPanel(
             add(row(savePicker, cancelPicker), BorderLayout.SOUTH)
         }
         val commentForm = JPanel(BorderLayout(JBUI.scale(4), JBUI.scale(4))).apply {
-            add(stack(commentEditorHeading, labelFor("editor.comment", commentEditorText)), BorderLayout.NORTH)
-            add(JBScrollPane(commentEditorText), BorderLayout.CENTER)
+            add(stack(commentEditorHeading, labelFor("editor.comment", commentEditorText.input)), BorderLayout.NORTH)
+            add(commentEditorText, BorderLayout.CENTER)
             add(row(saveComment, cancelComment), BorderLayout.SOUTH)
         }
         details.add(form, "editor")
@@ -432,12 +434,14 @@ internal class IssueDetailsPanel(
 
         ApplicationManager.getApplication().messageBus.connect(parent).subscribe(
             LafManagerListener.TOPIC,
-            LafManagerListener { issueText.reloadCssStylesheets() },
+            LafManagerListener {
+                issueText.reloadCssStylesheets()
+                comment.reloadCssStylesheets()
+                description.reloadCssStylesheets()
+                commentEditorText.reloadCssStylesheets()
+            },
         )
-        comment.onEdit { if (!updating) model.editComment(comment.text) }
-        commentEditorText.onEdit { if (!updating) model.editCommentEditor(commentEditorText.text) }
         title.onEdit { if (!updating) updateDraft() }
-        description.onEdit { if (!updating) updateDraft() }
         labels.onEdit { if (!updating) updateDraft() }
         assignees.onEdit { if (!updating) updateDraft() }
         pickerSearch.onEdit { if (!updating) model.searchPicker(pickerSearch.text) }
@@ -450,37 +454,38 @@ internal class IssueDetailsPanel(
         updating = true
         try {
             val editor = state.editor
+            val connectionChanged = renderedConnection != model.connectionVersion
             when {
                 editor != null -> {
                     val (draft, number) = editor
+                    val resetView = !wasEditing || connectionChanged
                     editorHeading.text = number?.let { message("editor.issue", it.toString()) } ?: message("action.new")
                     title.syncText(draft.title)
-                    description.syncText(draft.body)
+                    description.syncDraft(draft.body, editable = !state.writing, resetView = resetView)
                     labels.syncNames(draft.labels)
                     assignees.syncNames(draft.assignees)
                     // Existing issues change labels and assignees with their pickers.
                     val creating = number == null
                     for (field in listOf(labelsLabel, labels, assigneesLabel, assignees)) field.isVisible = creating
                     title.isEditable = !state.writing
-                    description.isEditable = !state.writing
                     labels.isEditable = !state.writing
                     assignees.isEditable = !state.writing
                     save.text = message(if (number == null) "action.create" else "action.save")
                     save.isEnabled = !state.writing && !state.needsSignIn && draft.title.isNotBlank()
                     cancel.isEnabled = !state.writing
                     detailCards.show(details, "editor")
-                    if (!wasEditing && panel.isShowing) title.requestFocusInWindow()
+                    if (resetView && panel.isShowing) title.requestFocusInWindow()
                 }
 
                 state.commentEditor != null && state.issue != null -> {
                     val commentEditor = state.commentEditor
+                    val resetView = editedCommentId != commentEditor.commentId || connectionChanged
                     commentEditorHeading.text = message("editor.commentHeading", commentEditor.issueNumber.toString())
-                    commentEditorText.syncText(commentEditor.body)
-                    commentEditorText.isEditable = !state.writing
+                    commentEditorText.syncDraft(commentEditor.body, editable = !state.writing, resetView = resetView)
                     saveComment.isEnabled = !state.writing && !state.needsSignIn && commentEditor.body.isNotBlank()
                     cancelComment.isEnabled = !state.writing
                     detailCards.show(details, "comment")
-                    if (!wasEditingComment && panel.isShowing) commentEditorText.requestFocusInWindow()
+                    if (resetView && panel.isShowing) commentEditorText.input.requestFocusInWindow()
                 }
 
                 state.picker != null && state.issue != null -> {
@@ -507,7 +512,8 @@ internal class IssueDetailsPanel(
                 }
             }
             wasEditing = editor != null
-            wasEditingComment = editor == null && state.commentEditor != null && state.issue != null
+            editedCommentId = state.commentEditor?.commentId?.takeIf { editor == null && state.issue != null }
+            renderedConnection = model.connectionVersion
             shownPicker = state.picker?.kind?.takeIf { editor == null && state.issue != null }
 
             val error = state.writeError ?: state.detailError
@@ -555,8 +561,10 @@ internal class IssueDetailsPanel(
         editMilestone.isEnabled = editLabels.isEnabled
         branch.isEnabled = !state.writing
         refresh.isEnabled = !state.writing && !state.detailLoading
-        comment.syncText(state.commentDraft)
-        comment.isEditable = !state.writing
+        val context = model.connectionVersion to issue.number
+        val posted = state.commentDraft.isEmpty() && comment.text.isNotEmpty()
+        comment.syncDraft(state.commentDraft, editable = !state.writing, resetView = context != composerContext || posted)
+        composerContext = context
         post.isEnabled = !state.writing && !state.needsSignIn && state.commentDraft.isNotBlank()
     }
 
