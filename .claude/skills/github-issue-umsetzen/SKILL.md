@@ -12,6 +12,10 @@ Repositorys.
 Ablauf: Plan im Issue → `/approve` → Umsetzung und PR → `/approve` im PR → Merge und Aufräumen. Jede Phase lässt sich
 fortsetzen. Rekonstruiere den Stand bei jedem Aufruf aus Issue, PR und Branches statt aus Erinnerung.
 
+**Zielbranch** ist `develop`, wenn das Repository diesen Branch auf dem Remote hat, sonst der Default-Branch. Von ihm
+wird abgebrancht, gegen ihn geht der PR. Merge nie direkt in `main`: Releases entstehen durch einen Merge von `develop`
+nach `main` und gehören nicht zu diesem Skill.
+
 ## Aufruf
 
 Argument: `$ARGUMENTS`
@@ -49,7 +53,7 @@ derselben Stelle fort.
 
 ## 1. Issue wählen und Plan vorlegen
 
-1. Prüfe das GitHub-Repository, den Default-Branch und den Arbeitsbaum. Lies das genannte Issue mit allen Kommentaren.
+1. Prüfe das GitHub-Repository, den Zielbranch und den Arbeitsbaum. Lies das genannte Issue mit allen Kommentaren.
    Ohne genannte Issue-Nummer prüfe offene Issues und PRs. Wähle genau ein offenes Issue mit klarem
    Ergebnis, überschaubarem Umfang und prüfbarer Umsetzung. Meide Issues mit Blockern, laufender Umsetzung oder einem
    passenden offenen PR. Nenne das gewählte Issue und den Grund kurz.
@@ -69,14 +73,15 @@ freigegebene Plan.
 
 ## 3. Umsetzen und PR anlegen
 
-1. Hole den aktuellen Default-Branch vom Remote und erstelle darauf einen Feature-Branch. Verwende `feature/` als
+1. Hole den aktuellen Zielbranch vom Remote und erstelle darauf einen Feature-Branch. Verwende `feature/` als
    Standardpräfix und halte fremde lokale Änderungen aus dem Branch heraus. Verwende bei Bedarf einen eigenen Worktree.
 2. Setze den freigegebenen Plan vollständig um und führe die passenden Projektprüfungen aus. Prüfe den Diff. Jeder selbst
    verfasste Commit erhält eine Überschrift, eine Leerzeile und eine Liste der Änderungen. Erfordert die Umsetzung eine
    wesentliche Abweichung vom Plan, halte an und lege im Issue einen neuen Plan zur Freigabe vor.
-3. Pushe den Branch und erstelle einen Pull Request gegen den Default-Branch. Verlinke das vollständig gelöste Issue im
+3. Pushe den Branch und erstelle einen Pull Request gegen den Zielbranch (`gh pr create --base <Zielbranch>`). Verlinke das vollständig gelöste Issue im
    PR-Text mit `Closes #<Nummer>` und verweise auf den freigegebenen Plan. Beschreibe Änderungen, durchgeführte Prüfungen
-   und offene Punkte. Prüfe die CI und behebe Fehler, die zur Änderung gehören.
+   und offene Punkte. Prüfe die CI und behebe Fehler, die zur Änderung gehören. Laufen für den PR keine CI-Checks,
+   sind die lokalen Projektprüfungen maßgeblich; nenne das im PR-Status.
 4. Kommentiere im Issue mit Marker `<!-- github-issue-umsetzen:pr-angelegt -->`, dass der PR angelegt wurde, mit Link.
 5. Kommentiere im PR mit Marker `<!-- github-issue-umsetzen:pr-status -->` den Stand zur Freigabe: Head-Commit-SHA,
    Prüf- und CI-Status, offene Punkte und die Bitte um `/approve` durch einen Maintainer.
@@ -96,7 +101,7 @@ seitdem geändert, lege den neuen Stand per PR-Status vor und warte erneut.
 
 ## 5. Nach Freigabe mergen und aufräumen
 
-1. Prüfe PR, Head-Commit, Pflichtchecks und Mergefähigkeit erneut. Bei einem bereits gemergten PR setze mit der
+1. Prüfe PR, Basis-Branch (muss der Zielbranch sein), Head-Commit, Pflichtchecks und Mergefähigkeit erneut. Bei einem bereits gemergten PR setze mit der
    Bereinigung fort. Merge sonst über GitHub mit einer im Repository erlaubten Methode. Bevorzuge einen Merge-Commit,
    wenn er der Projektpraxis entspricht. Sichere den freigegebenen Head beim Merge mit
    `gh pr merge --match-head-commit <SHA>`. Verwende für einen selbst verfassten Merge- oder Squash-Commit ebenfalls
@@ -105,6 +110,8 @@ seitdem geändert, lege den neuen Stand per PR-Status vor und warte erneut.
    Feature-Branch dieses Ablaufs lokal und auf dem Remote, wenn er noch auf dem gemergten PR-Stand steht. Entferne einen
    eigens angelegten Worktree nur bei sauberem Arbeitsbaum. Bereinige veraltete Remote-Refs und schütze fremde
    Änderungen.
-3. Prüfe den Arbeitsbaum, die Branch-Bereinigung und den Status des Issues. Melde PR, Merge-Commit und Abschlussstatus.
+3. Prüfe den Arbeitsbaum, die Branch-Bereinigung und den Status des Issues. GitHub schließt das Issue per
+   `Closes #<Nummer>` nur bei einem Merge in den Default-Branch. Ist es nach dem Merge noch offen, schließe es mit
+   Verweis auf den PR (`gh issue close <Nummer> --reason completed --comment ...`). Melde PR, Merge-Commit und Abschlussstatus.
    Wenn eine Repository-Regel den Merge oder lokale Änderungen die Bereinigung blockieren, benenne den konkreten offenen
    Schritt.
