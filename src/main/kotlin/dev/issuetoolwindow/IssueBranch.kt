@@ -48,13 +48,16 @@ internal fun conflictingBranch(name: String, existing: Collection<String>, ignor
             name.startsWith("$branch/", ignoreCase)
     }
 
-/** Names the unfinished Git operation that has to end before switching branches, or `null` if there is none. */
+/**
+ * Returns the message key that asks to finish the unfinished Git operation before switching branches, or `null` if
+ * there is none. Each operation has a whole sentence so translations can inflect it.
+ */
 internal fun unfinishedOperation(state: VcsRepository.State): String? = when (state) {
     VcsRepository.State.NORMAL, VcsRepository.State.DETACHED -> null
-    VcsRepository.State.MERGING -> "merge"
-    VcsRepository.State.REBASING -> "rebase"
-    VcsRepository.State.GRAFTING -> "cherry-pick"
-    VcsRepository.State.REVERTING -> "revert"
+    VcsRepository.State.MERGING -> "branch.blocked.merge"
+    VcsRepository.State.REBASING -> "branch.blocked.rebase"
+    VcsRepository.State.GRAFTING -> "branch.blocked.cherryPick"
+    VcsRepository.State.REVERTING -> "branch.blocked.revert"
 }
 
 /** Asks for the branch name and, when several local roots belong to the repository, for the root. */
@@ -93,9 +96,9 @@ internal class CreateIssueBranchDialog(
     override fun doValidate(): ValidationInfo? {
         val repository = root
         val name = branchName
-        unfinishedOperation(repository.state)?.let { operation ->
+        unfinishedOperation(repository.state)?.let { key ->
             val target = if (roots.size > 1) rootBox else nameField
-            return ValidationInfo(message("branch.blocked", operation), target)
+            return ValidationInfo(message(key), target)
         }
         if (name.isEmpty()) return ValidationInfo(message("branch.empty"), nameField)
         if (!GitRefNameValidator.getInstance().checkInput(name)) return ValidationInfo(message("branch.invalid"), nameField)

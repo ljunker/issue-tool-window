@@ -53,9 +53,9 @@ class IssueBranchTest {
     fun `unfinished merge, rebase, cherry-pick and revert block the checkout`() {
         assertNull(unfinishedOperation(State.NORMAL))
         assertNull(unfinishedOperation(State.DETACHED))
-        assertEquals("merge", unfinishedOperation(State.MERGING))
-        assertEquals("rebase", unfinishedOperation(State.REBASING))
-        assertEquals("cherry-pick", unfinishedOperation(State.GRAFTING))
-        assertEquals("revert", unfinishedOperation(State.REVERTING))
+        assertEquals("branch.blocked.merge", unfinishedOperation(State.MERGING))
+        assertEquals("branch.blocked.rebase", unfinishedOperation(State.REBASING))
+        assertEquals("branch.blocked.cherryPick", unfinishedOperation(State.GRAFTING))
+        assertEquals("branch.blocked.revert", unfinishedOperation(State.REVERTING))
     }
 }
