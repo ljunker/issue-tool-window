@@ -8,7 +8,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-internal data class IssueDraft(val title: String = "", val body: String = "")
+/** Labels and assignees are only sent when an issue is created; editing an issue changes them with the pickers. */
+internal data class IssueDraft(
+    val title: String = "",
+    val body: String = "",
+    val labels: List<String> = emptyList(),
+    val assignees: List<String> = emptyList(),
+)
 
 internal data class IssueEditor(val draft: IssueDraft, val issueNumber: Long? = null)
 
@@ -114,6 +120,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     private var labelOptions: List<String>? = null
     private var assigneeOptions: List<String>? = null
     private var milestoneOptions: List<Milestone>? = null
+    private var templateOptions: List<IssueTemplate>? = null
     /** Whether the criteria restored on [connect] still need to be checked against the repository. */
     private var criteriaUnchecked = false
 
@@ -131,6 +138,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         labelOptions = null
         assigneeOptions = null
         milestoneOptions = null
+        templateOptions = null
         this.gateway = gateway
         criteriaUnchecked = gateway != null && settings.criteria != IssueCriteria()
         mutableState.value = if (gateway == null) IssuesState() else IssuesState(
@@ -176,6 +184,7 @@ internal class IssuesModel(private val scope: CoroutineScope) {
     fun refresh() {
         if (current.writing) return
         update { copy(writeError = null, feedback = null) }
+        templateOptions = null
         loadList()
         if (current.selected != null) loadDetail()
     }
@@ -398,8 +407,25 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         }
     }
 
-    fun startCreate() {
-        openEditor(IssueEditor(IssueDraft()))
+    /**
+     * Issue templates of the connected repository, loaded once per connection or [refresh]. A failure counts as no
+     * templates, so creating an issue works as without them.
+     */
+    suspend fun issueTemplates(): List<IssueTemplate> {
+        val source = gateway ?: return emptyList()
+        templateOptions?.let { return it }
+        val templates = try {
+            source.issueTemplates()
+        } catch (_: IssuesFailure) {
+            return emptyList()
+        }
+        if (gateway === source) templateOptions = templates
+        return templates
+    }
+
+    /** Opens the editor for a new issue, empty or filled in from a template. */
+    fun startCreate(draft: IssueDraft = IssueDraft()) {
+        openEditor(IssueEditor(draft))
     }
 
     fun startEdit() {
@@ -426,12 +452,16 @@ internal class IssuesModel(private val scope: CoroutineScope) {
         val (draft, number) = current.editor ?: return
         val title = draft.title.trim()
         if (title.isEmpty()) return
-        if (number == null) createIssue(title, draft.body.takeUnless(String::isBlank))
-        else saveChanges(number, title, draft.body)
+        if (number == null) {
+            val body = draft.body.takeUnless(String::isBlank)
+            createIssue(title, body, cleanedNames(draft.labels), cleanedNames(draft.assignees))
+        } else {
+            saveChanges(number, title, draft.body)
+        }
     }
 
-    private fun createIssue(title: String, body: String?) {
-        write({ create(title, body) }) { created ->
+    private fun createIssue(title: String, body: String?, labels: List<String>, assignees: List<String>) {
+        write({ create(title, body, labels, assignees) }) { created ->
             detailJob?.cancel()
             update {
                 copy(

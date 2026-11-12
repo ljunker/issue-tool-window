@@ -11,6 +11,7 @@ import org.jetbrains.plugins.github.exceptions.GithubStatusCodeException
 import java.io.IOException
 import java.net.URI
 import java.net.URLEncoder
+import java.util.Base64
 
 internal class GithubIssuesGateway(private val repository: Repository, account: GithubAccount) : IssuesGateway {
     private val executor = GithubApiRequestExecutor.Factory.getInstance().create(account)
@@ -19,6 +20,9 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
         URI("https", "api.github.com", "/repos/${repository.fullName}/labels", "per_page=100", null).toASCIIString()
     private val assigneesUrl =
         URI("https", "api.github.com", "/repos/${repository.fullName}/assignees", "per_page=100", null).toASCIIString()
+    private val templatesUrl = URI(
+        "https", "api.github.com", "/repos/${repository.fullName}/contents/$ISSUE_TEMPLATE_DIRECTORY", null,
+    ).toASCIIString()
     private val milestonesUrl = URI(
         "https", "api.github.com", "/repos/${repository.fullName}/milestones", "state=all&per_page=100", null,
     ).toASCIIString()
@@ -60,9 +64,25 @@ internal class GithubIssuesGateway(private val repository: Repository, account: 
     override suspend fun activity(number: Long, next: String?): Page<IssueActivity> =
         request(issueActivityRequest(repository, number, next)).toPage(next)
 
-    override suspend fun create(title: String, body: String?): Issue {
-        val fields = if (body == null) mapOf("title" to title) else mapOf("title" to title, "body" to body)
-        return request(GithubApiRequest.Post.Json(issuesUrl, fields, RestIssue::class.java, ACCEPT)).toIssue()
+    override suspend fun create(title: String, body: String?, labels: List<String>, assignees: List<String>): Issue =
+        request(
+            GithubApiRequest.Post.Json(
+                issuesUrl, createFields(title, body, labels, assignees), RestIssue::class.java, ACCEPT,
+            )
+        ).toIssue()
+
+    override suspend fun issueTemplates(): List<IssueTemplate> {
+        val files = request(
+            GithubApiRequest.Get.Optional.Json(templatesUrl, Array<RestContent>::class.java, ACCEPT)
+        ) ?: return emptyList()
+        val templates = linkedMapOf<String, IssueTemplate>()
+        for (file in files) {
+            if (file.type != "file" || !isMarkdownTemplate(file.name)) continue
+            val content = request(GithubApiRequest.Get.Optional.Json(pageUrl(file.url), RestFile::class.java, ACCEPT))
+                ?.text() ?: continue
+            templates[file.name] = parseIssueTemplate(file.name, content)
+        }
+        return templatesForChooser(templates)
     }
 
     override suspend fun updateIssue(number: Long, title: String, body: String): Issue =
@@ -279,6 +299,19 @@ internal fun setMilestoneRequest(issueUrl: String, milestone: Long?): GithubApiR
         override val body: String = "{\"milestone\":${milestone ?: "null"}}"
     }
 
+/** Fields of a new issue; GitHub ignores labels and assignees silently for accounts without push access. */
+internal fun createFields(
+    title: String,
+    body: String?,
+    labels: List<String>,
+    assignees: List<String>,
+): Map<String, Any> = buildMap {
+    put("title", title)
+    body?.let { put("body", it) }
+    if (labels.isNotEmpty()) put("labels", labels)
+    if (assignees.isNotEmpty()) put("assignees", assignees)
+}
+
 private fun assigneesBody(login: String): Map<String, List<String>> = mapOf("assignees" to listOf(login))
 
 internal suspend fun <T> allPages(start: String, load: suspend (String) -> Page<T>): List<T> {
@@ -342,6 +375,12 @@ internal data class RestUser(val login: String)
 internal data class RestLabel(val name: String, val color: String? = null)
 internal data class RestMilestone(val number: Long, val title: String, val state: String? = null) {
     fun toMilestone(): Milestone = Milestone(number, title, state != "closed")
+}
+internal data class RestContent(val name: String, val type: String, val url: String)
+internal data class RestFile(val content: String? = null, val encoding: String? = null) {
+    /** The file text; GitHub sends files up to 1 MB as Base64 with line breaks. */
+    fun text(): String? = content?.takeIf { encoding == "base64" }
+        ?.let { String(Base64.getMimeDecoder().decode(it), Charsets.UTF_8) }
 }
 internal data class RestComment(val nodeId: String, val user: RestUser?, val body: String?, val createdAt: String?) {
     fun toComment(): Comment = Comment(nodeId, user?.login, body.orEmpty(), createdAt)

@@ -1,5 +1,7 @@
 package dev.issuetoolwindow
 
+import com.intellij.collaboration.ui.codereview.list.search.ChooserPopupUtil
+import com.intellij.collaboration.ui.util.popup.PopupItemPresentation
 import com.intellij.icons.AllIcons
 import com.intellij.ide.ActivityTracker
 import com.intellij.ide.BrowserUtil
@@ -16,9 +18,11 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.IconUtil
@@ -44,6 +48,7 @@ import org.jetbrains.plugins.github.authentication.GHAccountsUtil
 import org.jetbrains.plugins.github.authentication.accounts.GithubAccount
 import org.jetbrains.plugins.github.util.GHHostedRepositoriesManager
 import java.awt.CardLayout
+import java.awt.Point
 import java.net.URI
 import javax.swing.Icon
 import javax.swing.JPanel
@@ -349,6 +354,8 @@ private class IssuesToolWindow(private val project: Project) : Disposable, Issue
     }
 
     private inner class NewIssueAction : ToolWindowAction(message("action.new"), AllIcons.General.Add) {
+        private var choosing: Job? = null
+
         override fun update(e: AnActionEvent) {
             val state = model.state.value
             val editor = state.editor
@@ -358,8 +365,34 @@ private class IssuesToolWindow(private val project: Project) : Disposable, Issue
         }
 
         override fun actionPerformed(e: AnActionEvent) {
-            if (model.state.value.editor == null) model.startCreate()
-            if (model.state.value.editor != null) showDetails(true)
+            if (model.state.value.editor != null) {
+                showDetails(true)
+                return
+            }
+            if (choosing?.isActive == true) return
+            val point = e.inputEvent?.component?.let { RelativePoint(it, Point(0, it.height)) }
+                ?: JBPopupFactory.getInstance().guessBestPopupLocation(e.dataContext)
+            val connection = connectedTo
+            choosing = scope.launch {
+                val templates = model.issueTemplates()
+                // Templates load asynchronously; meanwhile the repository or account may have changed.
+                if (connectedTo != connection) return@launch
+                val draft = if (templates.isEmpty()) IssueDraft() else chooseTemplate(point, templates) ?: return@launch
+                if (connectedTo != connection) return@launch
+                model.startCreate(draft)
+                if (model.state.value.editor != null) showDetails(true)
+            }
+        }
+
+        /** Offers the templates and, last as on GitHub, a blank issue; `null` when the popup is cancelled. */
+        private suspend fun chooseTemplate(point: RelativePoint, templates: List<IssueTemplate>): IssueDraft? {
+            val blank = IssueTemplate(message("template.blank"), message("template.blank.about"), IssueDraft())
+            val chosen = ChooserPopupUtil.showChooserPopup(
+                point,
+                templates + blank,
+                presenter = { template -> PopupItemPresentation.Simple(template.name, null, template.about) },
+            )
+            return chosen?.draft
         }
     }
 
