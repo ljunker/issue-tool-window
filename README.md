@@ -14,6 +14,7 @@ GitHub-Konto, das in IDEA bereits für **Pull Requests** eingerichtet ist.
 - **Kommentieren, schließen und wieder öffnen**
 - **Branch aus Issue erstellen**: Branch-Name aus Nummer und Titel, direkt ausgecheckt
 - **Issue des aktuellen Branches in der Statusleiste**: `#42` und gekürzter Titel, ein Klick öffnet das Issue
+- **Issues über Search Everywhere finden**: `#42` oder Text aus Titel und Beschreibung, ohne das Tool Window zu öffnen
 - Keine eigene Anmeldung nötig – das GitHub-Konto aus IDEA wird wiederverwendet
 - **Oberfläche auf Deutsch oder Englisch**: Deutsch, wenn IDEA auf Deutsch läuft (Sprachpaket), sonst Englisch.
   Die README nennt die englischen Bezeichnungen.
@@ -94,6 +95,16 @@ Issue-Liste bei Bedarf auf das Repository des Branches um.
 - Ohne Issue-Nummer im Branch-Namen oder wenn das Repository kein Issue mit dieser Nummer hat, bleibt die Anzeige leer.
 - Ohne GitHub-Konto oder Verbindung zeigt die Statusleiste nur die Nummer.
 - Ausblenden lässt sich die Anzeige über das Kontextmenü der Statusleiste (**GitHub Issue of Current Branch**).
+
+### Search Everywhere
+
+**Search Everywhere** (zweimal Shift) findet Issues im Tab **GitHub Issues** und unter **All**. `#42` findet Issue 42,
+offen oder geschlossen. Freier Text ab drei Zeichen sucht in Titel und Beschreibung; offene Issues stehen vor
+geschlossenen. Die Auswahl eines Treffers öffnet das Issue im Tab **GitHub Issue**.
+
+- Durchsucht wird das Repository, das das Tool Window zeigt oder zuletzt gezeigt hat, sonst das Repository des
+  `origin`-Remotes. Verwendet wird dasselbe GitHub-Konto wie in der Statusleiste.
+- Ohne GitHub-Remote, Konto oder Verbindung erscheinen keine Treffer und keine Fehlermeldungen.
 
 ## Entwicklung
 
