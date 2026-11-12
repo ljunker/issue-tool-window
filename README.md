@@ -17,6 +17,7 @@ GitHub-Konto, das in IDEA bereits für **Pull Requests** eingerichtet ist.
 - **Branch aus Issue erstellen**: Branch-Name aus Nummer und Titel, direkt ausgecheckt
 - **Issue des aktuellen Branches in der Statusleiste**: `#42` und gekürzter Titel, ein Klick öffnet das Issue
 - **Issues über Search Everywhere finden**: `#42` oder Text aus Titel und Beschreibung, ohne das Tool Window zu öffnen
+- **Issue-Referenzen öffnen**: `#42` in Code-Kommentaren per Strg/Cmd-Klick, in Commit-Messages über das Git-Log
 - Keine eigene Anmeldung nötig – das GitHub-Konto aus IDEA wird wiederverwendet
 - **Oberfläche auf Deutsch oder Englisch**: Deutsch, wenn IDEA auf Deutsch läuft (Sprachpaket), sonst Englisch.
   Die README nennt die englischen Bezeichnungen.
@@ -119,6 +120,19 @@ geschlossenen. Die Auswahl eines Treffers öffnet das Issue im Tab **GitHub Issu
 - Durchsucht wird das Repository, das das Tool Window zeigt oder zuletzt gezeigt hat, sonst das Repository des
   `origin`-Remotes. Verwendet wird dasselbe GitHub-Konto wie in der Statusleiste.
 - Ohne GitHub-Remote, Konto oder Verbindung erscheinen keine Treffer und keine Fehlermeldungen.
+
+### Issue-Referenzen in Code und Commits
+
+`#42` in Code-Kommentaren erscheint als Link. Strg/Cmd-Klick oder **Go to Declaration** öffnet Issue 42 im Tab
+**GitHub Issue**. Im Git-Log öffnet **Open GitHub Issue** im Kontextmenü eines Commits das in der Commit-Message
+genannte Issue; nennt die Message mehrere Issues, folgt ein Untermenü.
+
+- Es gilt das GitHub.com-Repository des Git-Roots der Datei bzw. des Commits: das Repository, das das Tool Window zeigt,
+  sonst das des `origin`-Remotes.
+- Ohne GitHub.com-Remote gibt es weder Links noch Menüeintrag.
+- Nicht als Referenz gelten Nummern, die an ein Wort grenzen (`a#1`, `#1a`), und HTML-Zeichenreferenzen (`&#123;`).
+- Links direkt in der Commit-Message im Git-Log stammen weiterhin aus **Settings → Version Control → Issue Navigation**
+  und öffnen den Browser. Das Plugin ändert diese Einstellungen nicht.
 
 ## Entwicklung
 
